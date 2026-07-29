@@ -26,34 +26,28 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle 7.5
+      - name: Setup Gradle 8.5
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '7.5'
+          gradle-version: '8.5'
 
       - name: Generate Gradle wrapper
-        working-directory: android/option_a_kotlin
-        run: gradle wrapper --gradle-version 7.5 --distribution-type bin
+        working-directory: android
+        run: gradle wrapper --gradle-version 8.5 --distribution-type bin
 
-      - name: Test minimal Chaquopy build (diagnostic)
-        working-directory: android/test_minimal
-        run: |
-          gradle wrapper --gradle-version 7.5 --distribution-type bin
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -50
-
-      - name: Build debug APK (Option A)
-        working-directory: android/option_a_kotlin
+      - name: Build debug APK
+        working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: List built APK
         run: |
-          find android/option_a_kotlin/app/build/outputs -name "*.apk" -exec ls -lh {} \;
+          find android/app/build/outputs -name "*.apk" -exec ls -lh {} \;
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ps4cheater-debug-apk
-          path: android/option_a_kotlin/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 90
 
@@ -61,7 +55,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: android/option_a_kotlin/app/build/outputs/apk/debug/*.apk
+          files: android/app/build/outputs/apk/debug/*.apk
           generate_release_notes: true
           draft: false
           prerelease: false
