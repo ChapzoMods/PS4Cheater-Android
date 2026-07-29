@@ -12,10 +12,4 @@ buildscript {
     }
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        maven { url 'https://chaquo.com/maven' }
-    }
-}
+// Repositories are declared in settings.gradle via dependencyResolutionManagement.
