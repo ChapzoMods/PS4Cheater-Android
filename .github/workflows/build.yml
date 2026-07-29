@@ -31,40 +31,9 @@ jobs:
         with:
           gradle-version: '7.5.1'
 
-      - name: Verify Android SDK
-        run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la $ANDROID_SDK_ROOT/platforms/ | head -5
-          ls -la $ANDROID_SDK_ROOT/build-tools/ | head -5
-
       - name: Generate Gradle wrapper
         working-directory: android/option_a_kotlin
         run: gradle wrapper --gradle-version 7.5.1 --distribution-type bin
-
-      - name: Diagnose Chaquopy plugin
-        working-directory: android/option_a_kotlin
-        run: |
-          cat > /tmp/test_chaquopy.gradle << 'GROOVY'
-          buildscript {
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven { url 'https://chaquo.com/maven' }
-              }
-              dependencies {
-                  classpath 'com.android.tools.build:gradle:7.4.2'
-                  classpath 'com.chaquo.python:gradle:12.0.0'
-              }
-          }
-          apply plugin: 'com.android.application'
-          apply plugin: 'com.chaquo.python'
-          println "=== DIAGNOSTIC: Applied plugins ==="
-          project.plugins.each { println "  Plugin: ${it.class.name}" }
-          println "=== DIAGNOSTIC: Extensions ==="
-          project.extensions.extensionsSchema.each { println "  Extension: ${it.key} -> ${it.value.publicType.name}" }
-          println "=== DIAGNOSTIC: has chaquopy method: " + project.metaClass.respondsTo(project, 'chaquopy') + " ==="
-          GROOVY
-          ./gradlew --no-daemon -q --init-script /tmp/test_chaquopy.gradle help 2>&1 | grep -A2 "DIAGNOSTIC\|chaquopy\|Extension:\|Plugin:" || true
 
       - name: Build debug APK
         working-directory: android/option_a_kotlin

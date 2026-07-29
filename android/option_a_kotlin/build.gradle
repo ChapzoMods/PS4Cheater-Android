@@ -1,13 +1,14 @@
-// Top-level build file
+// Top-level build file — uses local JAR files for Chaquopy to bypass Maven resolution issues
 buildscript {
     repositories {
         google()
         mavenCentral()
-        maven { url 'https://chaquo.com/maven' }
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:7.4.2'
-        classpath 'com.chaquo.python:gradle:12.0.0'
+        classpath files('libs/gradle-12.0.0.jar')
+        classpath files('libs/commons-compress-1.18.jar')
+        classpath files('libs/json-20160810.jar')
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.8.22'
     }
 }
