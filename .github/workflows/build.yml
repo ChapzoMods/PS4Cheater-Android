@@ -26,14 +26,14 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle 7.4
+      - name: Setup Gradle 7.5
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '7.4'
+          gradle-version: '7.5'
 
       - name: Generate Gradle wrapper
         working-directory: android/option_a_kotlin
-        run: gradle wrapper --gradle-version 7.4 --distribution-type bin
+        run: gradle wrapper --gradle-version 7.5 --distribution-type bin
 
       - name: Build debug APK
         working-directory: android/option_a_kotlin
