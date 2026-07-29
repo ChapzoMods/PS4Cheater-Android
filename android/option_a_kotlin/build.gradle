@@ -1,6 +1,8 @@
-// Top-level build file
+// Top-level build file.
+// NOTE: com.chaquo.python version is declared in settings.gradle under
+// pluginManagement.plugins, because this is the recommended way for
+// plugins that need dynamic version resolution.
 plugins {
     id 'com.android.application' version '7.4.2' apply false
-    id 'com.chaquo.python' version '12.0.0' apply false
     id 'org.jetbrains.kotlin.android' version '1.8.22' apply false
 }
