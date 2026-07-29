@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PS4Cheater</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>PS4Cheater <span id="status-badge" class="badge badge-off">●</span></h1>
+    <div id="status-line">Desconectado</div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="connect">Conexión</button>
+    <button class="tab-btn" data-tab="procs" disabled>Procesos</button>
+    <button class="tab-btn" data-tab="scan" disabled>Scan</button>
+    <button class="tab-btn" data-tab="memory" disabled>Memoria</button>
+    <button class="tab-btn" data-tab="cheats" disabled>Cheats</button>
+  </nav>
+
+  <main>
+    <!-- Tab: Conexión -->
+    <section id="tab-connect" class="tab-panel active">
+      <h2>Conectar a PS4</h2>
+      <div class="form-row">
+        <label>IP:
+          <input type="text" id="conn-ip" placeholder="192.168.1.100" value="">
+        </label>
+        <label>Puerto:
+          <input type="number" id="conn-port" value="744">
+        </label>
+        <button id="btn-connect">Conectar</button>
+        <button id="btn-disconnect" disabled>Desconectar</button>
+      </div>
+      <div id="conn-msg" class="msg"></div>
+    </section>
+
+    <!-- Tab: Procesos -->
+    <section id="tab-procs" class="tab-panel">
+      <h2>Procesos</h2>
+      <button id="btn-refresh-procs">Refrescar</button>
+      <table id="procs-table">
+        <thead><tr><th>PID</th><th>Nombre</th><th>Acción</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- Tab: Scan -->
+    <section id="tab-scan" class="tab-panel">
+      <h2>Escaneo de memoria</h2>
+      <div class="form-row">
+        <label>Tipo:
+          <select id="scan-type">
+            <option value="uint32">4 bytes (uint32)</option>
+            <option value="uint8">1 byte</option>
+            <option value="uint16">2 bytes</option>
+            <option value="uint64">8 bytes</option>
+            <option value="float">float</option>
+            <option value="double">double</option>
+            <option value="string">string</option>
+            <option value="hex">hex</option>
+          </select>
+        </label>
+        <label>Comparación:
+          <select id="scan-cmp">
+            <option value="exact">Exact Value</option>
+            <option value="bigger than">Bigger Than</option>
+            <option value="smaller than">Smaller Than</option>
+            <option value="between">Between</option>
+            <option value="changed">Changed</option>
+            <option value="unchanged">Unchanged</option>
+            <option value="increased">Increased</option>
+            <option value="decreased">Decreased</option>
+            <option value="unknown">Unknown Initial</option>
+          </select>
+        </label>
+        <label>Valor 1: <input type="text" id="scan-v1" placeholder="1337"></label>
+        <label>Valor 2: <input type="text" id="scan-v2" placeholder="(entre)"></label>
+        <button id="btn-scan-new">New Scan</button>
+        <button id="btn-scan-next">Next Scan</button>
+        <button id="btn-scan-results">Ver Resultados</button>
+      </div>
+      <div id="scan-msg" class="msg"></div>
+      <table id="results-table">
+        <thead><tr><th>#</th><th>Address</th><th>Value</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- Tab: Memoria -->
+    <section id="tab-memory" class="tab-panel">
+      <h2>Lectura/escritura de memoria</h2>
+      <div class="form-row">
+        <label>Address: <input type="text" id="mem-addr" placeholder="0x10000000"></label>
+        <label>Length: <input type="number" id="mem-len" value="32"></label>
+        <button id="btn-read">Leer</button>
+      </div>
+      <pre id="mem-dump" class="hex-dump"></pre>
+      <div class="form-row">
+        <label>Write hex: <input type="text" id="mem-write" placeholder="DEADBEEF"></label>
+        <button id="btn-write">Escribir</button>
+      </div>
+      <div id="mem-msg" class="msg"></div>
+    </section>
+
+    <!-- Tab: Cheats -->
+    <section id="tab-cheats" class="tab-panel">
+      <h2>Cheat table</h2>
+      <div class="form-row">
+        <label>Address: <input type="text" id="cheat-addr" placeholder="0x10000000"></label>
+        <label>Tipo: <input type="text" id="cheat-type" value="uint32"></label>
+        <label>Value: <input type="text" id="cheat-val" placeholder="9999"></label>
+        <label>Desc: <input type="text" id="cheat-desc" placeholder="HP"></label>
+        <button id="btn-cheat-add">Añadir</button>
+      </div>
+      <table id="cheats-table">
+        <thead><tr><th>ID</th><th>Address</th><th>Tipo</th><th>Value</th><th>Freeze</th><th>Desc</th><th>Acción</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

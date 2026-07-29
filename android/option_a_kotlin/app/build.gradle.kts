@@ -1,0 +1,102 @@
+plugins {
+    id("com.android.application")
+    id("com.chaquo.python")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.ps4cheater"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.ps4cheater"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables { useSupportLibrary = true }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.3"
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chaquopy: Python integration
+// ---------------------------------------------------------------------------
+
+chaquopy {
+    defaultConfig {
+        version = "3.10"
+
+        // Python source: app/src/main/python/ is included automatically.
+        // We also add the lib/ and core/ directories as additional source dirs
+        // so they're packaged into the APK.
+        // (Already copied into app/src/main/python/lib and .../core)
+
+        pip {
+            // numpy for vectorized scanning (10-50x faster)
+            install("numpy")
+        }
+    }
+}
+
+dependencies {
+    // AndroidX core
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.6.2")
+    implementation("androidx.activity:activity-compose:1.8.0")
+
+    // Jetpack Compose
+    implementation(platform("androidx.compose:compose-bom:2023.10.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+
+    // Navigation
+    implementation("androidx.navigation:navigation-compose:2.7.5")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Debugging
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+}

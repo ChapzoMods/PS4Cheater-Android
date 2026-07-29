@@ -1,0 +1,33 @@
+# Gradle / Android build artifacts
+android/option_a_kotlin/.gradle/
+android/option_a_kotlin/build/
+android/option_a_kotlin/app/build/
+android/option_a_kotlin/local.properties
+android/option_a_kotlin/captures/
+android/option_a_kotlin/.idea/
+android/option_a_kotlin/*.iml
+android/option_a_kotlin/app/*.iml
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.mypy_cache/
+
+# Session files
+.ps4cheater_session.json
+.ps4cheater_scan.json
+.ps4cheater_cheats.json
+.ps4cheater_history
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDEs
+.vscode/
+.idea/

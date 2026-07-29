@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PS4Cheater" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ps4_dark</item>
+        <item name="android:statusBarColor">@color/ps4_dark</item>
+        <item name="android:navigationBarColor">@color/ps4_dark</item>
+    </style>
+</resources>

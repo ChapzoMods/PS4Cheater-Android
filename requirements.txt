@@ -1,0 +1,17 @@
+# Dependencias Python para PS4Cheater-Android
+# Instalar con: pip install -r requirements.txt
+
+# CLI (obligatorio)
+click>=8.0
+rich>=13.0
+prompt_toolkit>=3.0
+
+# Rendimiento (opcional pero recomendado para escaneo vectorial)
+numpy>=1.20
+
+# App web Opción C (opcional, solo si se usa android/option_c_webview/)
+flask>=2.0
+
+# Testing (solo desarrollo)
+pytest>=7.0
+pytest-cov>=4.0
