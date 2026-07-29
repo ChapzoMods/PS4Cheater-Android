@@ -35,7 +35,13 @@ jobs:
         working-directory: android/option_a_kotlin
         run: gradle wrapper --gradle-version 7.5 --distribution-type bin
 
-      - name: Build debug APK
+      - name: Test minimal Chaquopy build (diagnostic)
+        working-directory: android/test_minimal
+        run: |
+          gradle wrapper --gradle-version 7.5 --distribution-type bin
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -50
+
+      - name: Build debug APK (Option A)
         working-directory: android/option_a_kotlin
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
