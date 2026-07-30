@@ -28,6 +28,54 @@ from .types import (
 )
 
 
+class UnsafeXMLError(Exception):
+    """Se rechazó un .CT que contiene DTDs o entidades (posible XXE/billion laughs)."""
+
+
+def _parse_ct_secure(path: str):
+    """
+    Parsea un .CT (XML) de forma segura frente a XXE y expansión de entidades.
+
+    La stdlib `xml.etree.ElementTree` no es segura frente a datos maliciosos
+    (billion laughs, entidades externas). Un .CT es un archivo que el usuario
+    importa desde fuentes no confiables, así que endurecemos el parseo:
+
+      - Si `defusedxml` está disponible, se usa (bloquea DTDs/entidades).
+      - Si no, se instala un parser expat que aborta ante cualquier
+        declaración de DTD o entidad.
+    """
+    try:
+        from defusedxml.ElementTree import parse as _defused_parse  # type: ignore
+    except ImportError:
+        pass
+    else:
+        return _defused_parse(path).getroot()
+
+    import xml.parsers.expat as expat
+    from xml.etree.ElementTree import TreeBuilder
+
+    def _forbid(*_args, **_kwargs):
+        raise UnsafeXMLError("el .CT contiene DTD/entidades y fue rechazado")
+
+    builder = TreeBuilder()
+    parser = expat.ParserCreate()
+    parser.buffer_text = True
+    parser.StartElementHandler = lambda tag, attrs: builder.start(tag, attrs)
+    parser.EndElementHandler = builder.end
+    parser.CharacterDataHandler = builder.data
+    # Aborta ante cualquier DTD o declaración/referencia de entidad
+    # para prevenir XXE y expansión de entidades (billion laughs).
+    parser.StartDoctypeDeclHandler = _forbid
+    parser.EntityDeclHandler = _forbid
+    parser.UnparsedEntityDeclHandler = _forbid
+    parser.ExternalEntityRefHandler = _forbid
+
+    with open(path, "rb") as f:
+        data = f.read()
+    parser.Parse(data, True)
+    return builder.close()
+
+
 # ---------------------------------------------------------------------------
 # CheatEntry
 # ---------------------------------------------------------------------------
@@ -327,9 +375,7 @@ class CheatList:
     @classmethod
     def load_ct(cls, path: str, ps4: Optional[PS4DBG] = None) -> "CheatList":
         """Carga un .CT de Cheat Engine. Mapea variable types a ValueType."""
-        import xml.etree.ElementTree as ET
-        tree = ET.parse(path)
-        root = tree.getroot()
+        root = _parse_ct_secure(path)
         cl = cls(ps4=ps4)
         ct_vt_reverse = {
             "0": ValueType.BYTE_TYPE,

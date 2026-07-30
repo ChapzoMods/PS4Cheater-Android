@@ -250,6 +250,46 @@ class TestExportImport:
         assert e_hp.address == 0x10000000
         assert e_hp.frozen is True
 
+    def test_load_ct_rejects_dtd_entities(self, tmp_path):
+        """Un .CT con DTD/entidades (billion laughs / XXE) debe ser rechazado."""
+        from core.cheats import UnsafeXMLError
+
+        malicious = (
+            '<?xml version="1.0"?>\n'
+            '<!DOCTYPE lolz [\n'
+            '  <!ENTITY lol "lol">\n'
+            '  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;">\n'
+            ']>\n'
+            '<CheatTable><CheatEntries><CheatEntry>'
+            '<Description>&lol2;</Description><Address>10</Address>'
+            '</CheatEntry></CheatEntries></CheatTable>'
+        )
+        path = tmp_path / "evil.ct"
+        path.write_text(malicious)
+        # defusedxml lanza EntitiesForbidden; el fallback lanza UnsafeXMLError.
+        with pytest.raises(Exception) as exc_info:
+            CheatList.load_ct(str(path))
+        name = type(exc_info.value).__name__
+        assert isinstance(exc_info.value, UnsafeXMLError) or "Forbidden" in name
+
+    def test_load_ct_rejects_external_entity(self, tmp_path):
+        """Un .CT que referencia una entidad externa (XXE) debe ser rechazado."""
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET")
+        xxe = (
+            '<?xml version="1.0"?>\n'
+            f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file://{secret}">]>\n'
+            '<CheatTable><CheatEntries><CheatEntry>'
+            '<Description>&xxe;</Description><Address>10</Address>'
+            '</CheatEntry></CheatEntries></CheatTable>'
+        )
+        path = tmp_path / "xxe.ct"
+        path.write_text(xxe)
+        with pytest.raises(Exception):
+            cl = CheatList.load_ct(str(path))
+            # Si por alguna razón no lanza, el secreto NO debe haberse filtrado.
+            assert all("TOP-SECRET" not in (e.description or "") for e in cl)
+
 
 class TestPointerList:
     def test_add_count(self):
