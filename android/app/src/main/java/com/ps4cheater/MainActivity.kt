@@ -117,19 +117,8 @@ fun HomeScreen(
                 )
                 Spacer(Modifier.height(12.dp))
 
-                val steps = listOf(
-                    "1" to "Pulsa \"Empaquetar scripts\" abajo — se creará ps4cheater.zip en tu carpeta Downloads",
-                    "2" to "Instala Termux desde F-Droid (NO desde Play Store)",
-                    "3" to "En Termux ejecuta: termux-setup-storage (otorga permiso)",
-                    "4" to "Descomprime: unzip ~/storage/downloads/ps4cheater.zip -d ~/ps4cheater",
-                    "5" to "Instala dependencias: cd ~/ps4cheater && pip install click rich prompt_toolkit",
-                    "6" to "(Opcional) numpy: pip install numpy (si falla, el escaneo será más lento pero funcional)",
-                    "7" to "Conecta: python cli/main.py connect <IP_PS4>",
-                    "8" to "Inicia servidor web: python -m http.server 8080 & (opcional, para UI web)",
-                    "9" to "Vuelve a esta app y pulsa \"Abrir interfaz web\""
-                )
-                steps.forEach { (num, text) ->
-                    Text("$num. $text", fontSize = 16.sp)
+                SETUP_STEPS.forEachIndexed { index, text ->
+                    Text("${index + 1}. $text", fontSize = 16.sp)
                     Spacer(Modifier.height(4.dp))
                 }
 
@@ -141,42 +130,7 @@ fun HomeScreen(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            "termux-setup-storage",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "unzip ~/storage/downloads/ps4cheater.zip -d ~/ps4cheater",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "cd ~/ps4cheater && pip install click rich prompt_toolkit",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "python cli/main.py connect <IP_PS4>",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "python -m http.server 8080 &",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
+                    CommandList(modifier = Modifier.padding(12.dp))
                 }
             }
         }
@@ -184,8 +138,9 @@ fun HomeScreen(
         Spacer(Modifier.height(16.dp))
 
         // Buttons
-        Button(
-            onClick = {
+        ScreenActions(
+            primaryLabel = "Empaquetar scripts a Downloads",
+            onPrimary = {
                 // 1. Switch to the loading screen immediately
                 onExtractStart()
                 // 2. Launch a background coroutine to build & publish the zip
@@ -197,17 +152,9 @@ fun HomeScreen(
                     onExtractComplete(result)
                 }
             },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Empaquetar scripts a Downloads")
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = onWebView,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Abrir interfaz web (localhost:8080)")
-        }
+            secondaryLabel = "Abrir interfaz web (localhost:8080)",
+            onSecondary = onWebView,
+        )
     }
 }
 
@@ -227,7 +174,7 @@ fun LoadingScreen() {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "Comprimiendo lib/, core/, cli/ en ps4cheater.zip",
+            "Comprimiendo ${PYTHON_ASSET_DIRS.joinToString("/, ")}/ en $ZIP_NAME",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.secondary
         )
@@ -275,40 +222,18 @@ fun DoneScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.height(8.dp))
-                val commands = listOf(
-                    "termux-setup-storage",
-                    "unzip ~/storage/downloads/ps4cheater.zip -d ~/ps4cheater",
-                    "cd ~/ps4cheater",
-                    "pip install click rich prompt_toolkit",
-                    "python cli/main.py connect <IP_PS4>"
-                )
-                commands.forEach { cmd ->
-                    Text(
-                        cmd,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Spacer(Modifier.height(4.dp))
-                }
+                CommandList()
             }
         }
 
         Spacer(Modifier.height(24.dp))
 
-        Button(
-            onClick = onHome,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Volver al inicio")
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = onWebView,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Abrir interfaz web")
-        }
+        ScreenActions(
+            primaryLabel = "Volver al inicio",
+            onPrimary = onHome,
+            secondaryLabel = "Abrir interfaz web",
+            onSecondary = onWebView,
+        )
     }
 }
 
@@ -354,10 +279,9 @@ fun WebViewScreen(onBack: () -> Unit) {
 fun extractPythonAssetsToDownloads(context: Context): String {
     return try {
         // 1. Build the zip into the app cache dir first
-        val cacheZip = File(context.cacheDir, "ps4cheater.zip")
+        val cacheZip = File(context.cacheDir, ZIP_NAME)
         ZipOutputStream(cacheZip.outputStream().buffered()).use { zos ->
-            val dirs = listOf("lib", "core", "cli")
-            for (dir in dirs) {
+            for (dir in PYTHON_ASSET_DIRS) {
                 val assetPath = "python/$dir"
                 val files = context.assets.list(assetPath) ?: emptyArray()
                 for (file in files) {
@@ -379,7 +303,7 @@ fun extractPythonAssetsToDownloads(context: Context): String {
         val downloadedUri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // Android 10+: use MediaStore.Downloads with RELATIVE_PATH
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, "ps4cheater.zip")
+                put(MediaStore.Downloads.DISPLAY_NAME, ZIP_NAME)
                 put(MediaStore.Downloads.MIME_TYPE, "application/zip")
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 put(MediaStore.Downloads.IS_PENDING, 1)
@@ -400,7 +324,7 @@ fun extractPythonAssetsToDownloads(context: Context): String {
             // Android 9 and below: write directly to the public Downloads directory
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             if (!downloadsDir.exists()) downloadsDir.mkdirs()
-            val targetFile = File(downloadsDir, "ps4cheater.zip")
+            val targetFile = File(downloadsDir, ZIP_NAME)
             cacheZip.inputStream().use { input ->
                 targetFile.outputStream().use { out ->
                     input.copyTo(out)
@@ -410,20 +334,19 @@ fun extractPythonAssetsToDownloads(context: Context): String {
         }
 
         if (downloadedUri == null) {
-            "Error: no se pudo crear ps4cheater.zip en Downloads (MediaStore devolvió null)"
+            "Error: no se pudo crear $ZIP_NAME en Downloads (MediaStore devolvió null)"
         } else {
-            "✓ ps4cheater.zip guardado en Downloads\n\n" +
+            "✓ $ZIP_NAME guardado en Downloads\n\n" +
                     "Tamaño: $sizeKb KB\n\n" +
                     "Ahora en Termux:\n" +
-                    "termux-setup-storage\n" +
-                    "unzip ~/storage/downloads/ps4cheater.zip -d ~/ps4cheater"
+                    TERMUX_COMMANDS.take(2).joinToString("\n")
         }
     } catch (e: Exception) {
         "Error: ${e.message ?: e.toString()}"
     } finally {
         // Clean up the cached zip regardless of success/failure
         try {
-            File(context.cacheDir, "ps4cheater.zip").delete()
+            File(context.cacheDir, ZIP_NAME).delete()
         } catch (_: Exception) {
             // ignore cleanup errors
         }

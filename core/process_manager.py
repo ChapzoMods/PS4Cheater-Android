@@ -14,7 +14,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Iterator, List, Optional, Tuple
 
-from lib import ProcessMap, MemoryEntry
+from lib import MemoryProtectionMixin, ProcessMap, format_region
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ def _bit_position(data: int, pos: int) -> int:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class MappedSection:
+class MappedSection(MemoryProtectionMixin):
     """Una región de memoria del proceso a la que se le puede hacer scan."""
     start: int
     length: int
@@ -271,29 +271,11 @@ class MappedSection:
     def end(self) -> int:
         return self.start + self.length
 
-    @property
-    def readable(self) -> bool:
-        return bool(self.prot & 0x1)
-
-    @property
-    def writable(self) -> bool:
-        return bool(self.prot & 0x2)
-
-    @property
-    def executable(self) -> bool:
-        return bool(self.prot & 0x4)
-
     def contains(self, address: int) -> bool:
         return self.start <= address < self.end
 
     def __str__(self) -> str:
-        prot_str = "".join([
-            "r" if self.prot & 0x1 else "-",
-            "w" if self.prot & 0x2 else "-",
-            "x" if self.prot & 0x4 else "-",
-        ])
-        return (f"{self.name:36s} {prot_str} "
-                f"0x{self.start:016X}-0x{self.end:016X} ({self.length // 1024} KB)")
+        return format_region(self.name, self.prot, self.start, self.end, name_width=36)
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +325,7 @@ class MappedSectionList:
         self.total_memory_size = 0
 
         for entry in pm.entries:
-            if not (entry.prot & 0x1):  # readable
+            if not entry.readable:
                 continue
             length = entry.end - entry.start
             start = entry.start

@@ -60,7 +60,7 @@ _NUMPY_DTYPES = {
     ValueType.ULONG_TYPE:  np.uint64,
     ValueType.FLOAT_TYPE:  np.float32,
     ValueType.DOUBLE_TYPE: np.float64,
-}
+} if HAS_NUMPY else {}
 
 
 def _new_scan_vectorized(
@@ -266,6 +266,84 @@ class ScanEngine:
     def cancel(self) -> None:
         self._cancel_event.set()
 
+    # ------------------------------------------------------------------
+    # Driver común de escaneo
+    # ------------------------------------------------------------------
+
+    def _scan_sections(
+        self,
+        sections: List[MappedSection],
+        process_chunk: Callable[[MappedSection, bytes, int, int], None],
+        count_results: Callable[[], int],
+        progress_cb: Optional[Callable[[ScanProgress], None]],
+        on_section_start: Optional[Callable[[MappedSection], None]] = None,
+        on_section_done: Optional[Callable[[MappedSection], None]] = None,
+    ) -> None:
+        """
+        Recorre `sections` leyendo bloques de `peek_buffer_length` bytes y llama a
+        `process_chunk(section, buffer, section_offset, absolute_address)` con cada
+        bloque, reportando progreso y respetando la cancelación.
+
+        Es el bucle común de new_scan / next_scan / pointer_scan.
+        """
+        total_bytes = sum(s.length for s in sections)
+        bytes_processed = 0
+        t0 = time.time()
+
+        def report(section_index: int, percent: Optional[float] = None) -> None:
+            if progress_cb is None:
+                return
+            pct = percent if percent is not None else (
+                bytes_processed / total_bytes * 80 if total_bytes > 0 else 0
+            )
+            progress_cb(ScanProgress(
+                section_index=section_index,
+                section_total=len(sections),
+                bytes_processed=bytes_processed,
+                bytes_total=total_bytes,
+                percent=pct,
+                elapsed_seconds=time.time() - t0,
+                results_so_far=count_results(),
+            ))
+
+        for sec_idx, section in enumerate(sections):
+            if self.is_cancelled:
+                break
+
+            if on_section_start:
+                on_section_start(section)
+
+            addr = section.start
+            section_offset = 0
+            remaining = section.length
+
+            while remaining > 0 and not self.is_cancelled:
+                chunk_len = min(self.peek_buffer_length, remaining)
+                try:
+                    buffer = self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
+                except Exception:
+                    buffer = b"\x00" * chunk_len
+
+                process_chunk(section, buffer, section_offset, addr)
+
+                addr += chunk_len
+                section_offset += chunk_len
+                remaining -= chunk_len
+                bytes_processed += chunk_len
+                report(sec_idx)
+
+            if on_section_done:
+                on_section_done(section)
+
+        report(len(sections), percent=100.0)
+
+    def _default_values(self, handler: MemoryTypeHandler,
+                        value_0: Optional[bytes], value_1: Optional[bytes]) -> Tuple[bytes, bytes]:
+        """Normaliza los valores de comparación a bytes (b\"\" cuando no se usan)."""
+        d0 = value_0 if handler.parse_first_value else (b"" if value_0 is None else value_0)
+        d1 = value_1 if handler.parse_second_value else (b"" if value_1 is None else value_1)
+        return d0, d1
+
     def _reset_cancel(self) -> None:
         self._cancel_event.clear()
 
@@ -297,62 +375,17 @@ class ScanEngine:
             if not sections:
                 raise RuntimeError("no sections selected for scan (use section_check first)")
 
-            total_bytes = sum(s.length for s in sections)
-            bytes_processed = 0
-            t0 = time.time()
+            d0, d1 = self._default_values(handler, value_0, value_1)
 
-            for sec_idx, section in enumerate(sections):
-                if self.is_cancelled:
-                    break
-
+            def start_section(section: MappedSection) -> None:
                 section.result_list = ResultList(handler.length, handler.alignment)
 
-                addr = section.start
-                base_addr_offset = 0
-                remaining = section.length
+            def process_chunk(section: MappedSection, buffer: bytes, section_offset: int, _addr: int) -> None:
+                _new_scan_vectorized(handler, buffer, d0, d1, section_offset, section.result_list)
 
-                while remaining > 0 and not self.is_cancelled:
-                    chunk_len = min(self.peek_buffer_length, remaining)
-                    try:
-                        buffer = self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
-                    except Exception:
-                        buffer = b"\x00" * chunk_len
-
-                    # Si no requiere parseo de valores, default_value_0 puede ser None
-                    # El comparador debe manejarlo
-                    d0 = value_0 if handler.parse_first_value else (b"" if value_0 is None else value_0)
-                    d1 = value_1 if handler.parse_second_value else (b"" if value_1 is None else value_1)
-
-                    _new_scan_vectorized(handler, buffer, d0, d1, base_addr_offset, section.result_list)
-
-                    addr += chunk_len
-                    base_addr_offset += chunk_len
-                    remaining -= chunk_len
-                    bytes_processed += chunk_len
-
-                    if progress_cb:
-                        pct = (bytes_processed / total_bytes * 80) if total_bytes > 0 else 0
-                        progress_cb(ScanProgress(
-                            section_index=sec_idx,
-                            section_total=len(sections),
-                            bytes_processed=bytes_processed,
-                            bytes_total=total_bytes,
-                            percent=pct,
-                            elapsed_seconds=time.time() - t0,
-                            results_so_far=self.pm.mapped_section_list.total_result_count(),
-                        ))
-
-            if progress_cb:
-                progress_cb(ScanProgress(
-                    section_index=len(sections),
-                    section_total=len(sections),
-                    bytes_processed=bytes_processed,
-                    bytes_total=total_bytes,
-                    percent=100.0,
-                    elapsed_seconds=time.time() - t0,
-                    results_so_far=self.pm.mapped_section_list.total_result_count(),
-                ))
-
+            self._scan_sections(sections, process_chunk,
+                                self.pm.mapped_section_list.total_result_count, progress_cb,
+                                on_section_start=start_section)
             return self.pm.mapped_section_list.total_result_count()
 
     # ------------------------------------------------------------------
@@ -377,63 +410,24 @@ class ScanEngine:
             if not sections:
                 raise RuntimeError("no sections with previous results to next-scan")
 
-            total_bytes = sum(s.length for s in sections)
-            bytes_processed = 0
-            t0 = time.time()
+            d0, d1 = self._default_values(handler, value_0, value_1)
+            new_lists: dict[int, ResultList] = {}
 
-            for sec_idx, section in enumerate(sections):
-                if self.is_cancelled:
-                    break
+            def start_section(section: MappedSection) -> None:
+                new_lists[id(section)] = ResultList(handler.length, handler.alignment)
 
-                old_rl = section.result_list
-                new_rl = ResultList(handler.length, handler.alignment)
+            def process_chunk(section: MappedSection, buffer: bytes, section_offset: int, _addr: int) -> None:
+                _next_scan_vectorized(handler, buffer, section.result_list, new_lists[id(section)],
+                                      d0, d1, section_offset)
 
-                addr = section.start
-                base_addr_offset = 0
-                remaining = section.length
+            def finish_section(section: MappedSection) -> None:
+                section.result_list = new_lists[id(section)]
 
-                while remaining > 0 and not self.is_cancelled:
-                    chunk_len = min(self.peek_buffer_length, remaining)
-                    try:
-                        buffer = self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
-                    except Exception:
-                        buffer = b"\x00" * chunk_len
+            def count_results() -> int:
+                return sum(s.result_list.count for s in sections if s.result_list)
 
-                    d0 = value_0 if handler.parse_first_value else (b"" if value_0 is None else value_0)
-                    d1 = value_1 if handler.parse_second_value else (b"" if value_1 is None else value_1)
-
-                    _next_scan_vectorized(handler, buffer, old_rl, new_rl, d0, d1, base_addr_offset)
-
-                    addr += chunk_len
-                    base_addr_offset += chunk_len
-                    remaining -= chunk_len
-                    bytes_processed += chunk_len
-
-                    if progress_cb:
-                        pct = (bytes_processed / total_bytes * 80) if total_bytes > 0 else 0
-                        progress_cb(ScanProgress(
-                            section_index=sec_idx,
-                            section_total=len(sections),
-                            bytes_processed=bytes_processed,
-                            bytes_total=total_bytes,
-                            percent=pct,
-                            elapsed_seconds=time.time() - t0,
-                            results_so_far=sum(s.result_list.count for s in sections if s.result_list) ,
-                        ))
-
-                section.result_list = new_rl
-
-            if progress_cb:
-                progress_cb(ScanProgress(
-                    section_index=len(sections),
-                    section_total=len(sections),
-                    bytes_processed=bytes_processed,
-                    bytes_total=total_bytes,
-                    percent=100.0,
-                    elapsed_seconds=time.time() - t0,
-                    results_so_far=self.pm.mapped_section_list.total_result_count(),
-                ))
-
+            self._scan_sections(sections, process_chunk, count_results, progress_cb,
+                                on_section_start=start_section, on_section_done=finish_section)
             return self.pm.mapped_section_list.total_result_count()
 
     # ------------------------------------------------------------------
@@ -457,53 +451,10 @@ class ScanEngine:
             if not sections:
                 raise RuntimeError("no sections selected for pointer scan")
 
-            total_bytes = sum(s.length for s in sections)
-            bytes_processed = 0
-            t0 = time.time()
+            def process_chunk(_section: MappedSection, buffer: bytes, _section_offset: int, addr: int) -> None:
+                _pointer_scan_buffer(self.pm, buffer, addr, pointer_list)
 
-            for sec_idx, section in enumerate(sections):
-                if self.is_cancelled:
-                    break
-
-                addr = section.start
-                remaining = section.length
-
-                while remaining > 0 and not self.is_cancelled:
-                    chunk_len = min(self.peek_buffer_length, remaining)
-                    try:
-                        buffer = self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
-                    except Exception:
-                        buffer = b"\x00" * chunk_len
-
-                    _pointer_scan_buffer(self.pm, buffer, addr, pointer_list)
-
-                    addr += chunk_len
-                    remaining -= chunk_len
-                    bytes_processed += chunk_len
-
-                    if progress_cb:
-                        pct = (bytes_processed / total_bytes * 80) if total_bytes > 0 else 0
-                        progress_cb(ScanProgress(
-                            section_index=sec_idx,
-                            section_total=len(sections),
-                            bytes_processed=bytes_processed,
-                            bytes_total=total_bytes,
-                            percent=pct,
-                            elapsed_seconds=time.time() - t0,
-                            results_so_far=pointer_list.count,
-                        ))
-
-            if progress_cb:
-                progress_cb(ScanProgress(
-                    section_index=len(sections),
-                    section_total=len(sections),
-                    bytes_processed=bytes_processed,
-                    bytes_total=total_bytes,
-                    percent=100.0,
-                    elapsed_seconds=time.time() - t0,
-                    results_so_far=pointer_list.count,
-                ))
-
+            self._scan_sections(sections, process_chunk, lambda: pointer_list.count, progress_cb)
             return pointer_list.count
 
     # ------------------------------------------------------------------

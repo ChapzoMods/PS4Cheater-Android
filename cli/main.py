@@ -31,6 +31,8 @@ import json
 import os
 import sys
 import struct
+from contextlib import contextmanager
+from typing import NoReturn
 
 # Add project root to sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -71,6 +73,57 @@ SCAN_STATE_FILE = os.path.expanduser("~/.ps4cheater_scan.json")
 CHEATS_FILE = os.path.expanduser("~/.ps4cheater_cheats.json")
 
 
+# ---------------------------------------------------------------------------
+# Helpers compartidos (errores, persistencia JSON, barra de progreso)
+# ---------------------------------------------------------------------------
+
+def abort(message: str) -> NoReturn:
+    """Imprime el error y termina con código 1 (patrón común de todos los comandos)."""
+    console.print(f"[red]❌ {message}[/red]")
+    sys.exit(1)
+
+
+def read_json(path: str, default=None):
+    """Lee un JSON de disco; devuelve `default` si no existe o está corrupto."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def write_json(path: str, data, warn_label: str = "") -> bool:
+    """Escribe un JSON a disco; avisa (sin abortar) si falla y hay `warn_label`."""
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f)
+        return True
+    except OSError as e:
+        if warn_label:
+            console.print(f"[yellow]⚠ No se pudo guardar {warn_label}: {e}[/yellow]")
+        return False
+
+
+@contextmanager
+def scan_progress(description: str, show_elapsed: bool = True):
+    """
+    Barra de progreso común de los escaneos.
+    Yields el callback que se pasa como `progress_cb` al ScanEngine.
+    """
+    columns = [
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+    ]
+    if show_elapsed:
+        columns.append(TimeElapsedColumn())
+    with Progress(*columns, console=console) as progress:
+        task = progress.add_task(description, total=100)
+        yield lambda p: progress.update(task, completed=p.percent)
+
+
+
 class Session:
     """Estado persistente entre comandos."""
     def __init__(self):
@@ -98,24 +151,18 @@ class Session:
             "cheats_path": self.cheats_path,
             "section_checks": self.section_checks,
         }
-        try:
-            with open(SESSION_FILE, "w") as f:
-                json.dump(data, f)
-        except OSError:
-            pass
+        write_json(SESSION_FILE, data)
 
     def load(self):
-        try:
-            with open(SESSION_FILE) as f:
-                data = json.load(f)
-            self.ip = data.get("ip", "")
-            self.port = data.get("port", PS4DBG_PORT)
-            self.pid = data.get("pid", 0)
-            self.proc_name = data.get("proc_name", "")
-            self.cheats_path = data.get("cheats_path", "")
-            self.section_checks = data.get("section_checks", [])
-        except (OSError, json.JSONDecodeError):
-            pass
+        data = read_json(SESSION_FILE)
+        if data is None:
+            return
+        self.ip = data.get("ip", "")
+        self.port = data.get("port", PS4DBG_PORT)
+        self.pid = data.get("pid", 0)
+        self.proc_name = data.get("proc_name", "")
+        self.cheats_path = data.get("cheats_path", "")
+        self.section_checks = data.get("section_checks", [])
 
     def sync_section_checks_to_pm(self):
         """Aplica self.section_checks al ProcessManager (después de cargar sections)."""
@@ -189,20 +236,14 @@ class Session:
             "length": self.handler.length,
             "results": results,
         }
-        try:
-            with open(SCAN_STATE_FILE, "w") as f:
-                json.dump(data, f)
-        except OSError as e:
-            console.print(f"[yellow]⚠ No se pudo guardar scan state: {e}[/yellow]")
+        write_json(SCAN_STATE_FILE, data, warn_label="scan state")
 
     def load_scan_state(self) -> bool:
         """Carga scan state desde disco. Devuelve True si había."""
         if not os.path.exists(SCAN_STATE_FILE):
             return False
-        try:
-            with open(SCAN_STATE_FILE) as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError):
+        data = read_json(SCAN_STATE_FILE)
+        if data is None:
             return False
         vt = ValueType(data["value_type"])
         ct = CompareType(data["compare_type"])
@@ -243,6 +284,7 @@ class Session:
         except OSError as e:
             console.print(f"[yellow]⚠ No se pudo guardar cheats: {e}[/yellow]")
 
+
     def load_cheats(self):
         """Carga la cheat list desde disco si existe."""
         if not os.path.exists(CHEATS_FILE):
@@ -270,8 +312,7 @@ def require_connected():
     if not session.connected and session.ip:
         session.connect(session.ip, session.port)
     if not session.connected or session.ps4 is None:
-        console.print("[red]❌ No conectado. Ejecuta: ps4cheater connect <IP>[/red]")
-        sys.exit(1)
+        abort("No conectado. Ejecuta: ps4cheater connect <IP>")
     # Cargar cheats persistidos si hay archivo y no están en memoria
     _ensure_cheats_loaded()
 
@@ -288,8 +329,7 @@ def _ensure_cheats_loaded():
 def require_attached():
     require_connected()
     if session.pid == 0:
-        console.print("[red]❌ No hay proceso attacheado. Ejecuta: ps4cheater attach <pid>[/red]")
-        sys.exit(1)
+        abort("No hay proceso attacheado. Ejecuta: ps4cheater attach <pid>")
     # Si tenemos pid pero no sections cargadas, recargarlas
     if session.pm.section_count == 0 and session.proc_name:
         try:
@@ -419,8 +459,7 @@ def procs():
     try:
         procs = session.ps4.get_process_list()
     except (PS4DBGError, OSError) as e:
-        console.print(f"[red]❌ Error al listar procesos: {e}[/red]")
-        sys.exit(1)
+        abort(f"Error al listar procesos: {e}")
     table = Table(title=f"Procesos ({len(procs)})", show_lines=False)
     table.add_column("PID", justify="right", style="cyan")
     table.add_column("Nombre", style="white")
@@ -459,8 +498,7 @@ def attach(target):
                     match = p
                     break
     if match is None:
-        console.print(f"[red]❌ Proceso '{target}' no encontrado[/red]")
-        sys.exit(1)
+        abort(f"Proceso '{target}' no encontrado")
     session.attach(match.pid, match.name)
     console.print(f"[green]✓ Attacheado a {match.name} (pid={match.pid})[/green]")
     # Cargar sections automáticamente
@@ -581,28 +619,14 @@ def new(value_type_str, compare_type_str, value1, value2, hex_fmt, length, unali
             if s.writable and not s.executable:
                 session.pm.mapped_section_list.section_check(i, True)
         if session.pm.total_memory_size == 0:
-            console.print("[red]❌ Sigue sin haber secciones marcadas. Usa 'sections --rw-only' primero.[/red]")
-            sys.exit(1)
+            abort("Sigue sin haber secciones marcadas. Usa 'sections --rw-only' primero.")
 
     # Progreso
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task(f"Scanning {VALUE_TYPE_TO_STR.get(vt, '?')} {compare_type_str}…",
-                                 total=100)
-        def on_progress(p: ScanProgress):
-            progress.update(task, completed=p.percent)
-
+    with scan_progress(f"Scanning {VALUE_TYPE_TO_STR.get(vt, '?')} {compare_type_str}…") as on_progress:
         try:
             count = session.scan_engine.new_scan(handler, v0, v1, progress_cb=on_progress)
         except Exception as e:
-            console.print(f"[red]❌ Error en scan: {e}[/red]")
-            sys.exit(1)
+            abort(f"Error en scan: {e}")
     # Persistir scan state
     session.save_scan_state()
     console.print(f"[green]✓ Scan completado: {count} resultado(s).[/green]")
@@ -620,13 +644,11 @@ def next(compare_type_str, value1, value2, hex_fmt):
     # Cargar scan state previo si no hay handler en memoria
     if session.handler is None:
         if not session.load_scan_state():
-            console.print("[red]❌ No hay scan previo. Ejecuta 'scan new' primero.[/red]")
-            sys.exit(1)
+            abort("No hay scan previo. Ejecuta 'scan new' primero.")
     try:
         ct = lookup_compare_type(compare_type_str)
     except ValueError as e:
-        console.print(f"[red]❌ {e}[/red]")
-        sys.exit(1)
+        abort(str(e))
     # Mantener el value_type del scan anterior pero cambiar compare_type
     handler = make_handler(session.handler.value_type, ct,
                            is_aligned=(session.handler.alignment != 1),
@@ -635,22 +657,11 @@ def next(compare_type_str, value1, value2, hex_fmt):
     v0 = handler.parse_value(value1, hex_fmt) if (handler.parse_first_value and value1) else b""
     v1 = handler.parse_value(value2, hex_fmt) if (handler.parse_second_value and value2) else b""
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task(f"Next-scan {compare_type_str}…", total=100)
-        def on_progress(p: ScanProgress):
-            progress.update(task, completed=p.percent)
+    with scan_progress(f"Next-scan {compare_type_str}…") as on_progress:
         try:
             count = session.scan_engine.next_scan(handler, v0, v1, progress_cb=on_progress)
         except Exception as e:
-            console.print(f"[red]❌ Error en next-scan: {e}[/red]")
-            sys.exit(1)
+            abort(f"Error en next-scan: {e}")
     session.save_scan_state()
     console.print(f"[green]✓ Next-scan completado: {count} resultado(s).[/green]")
 
@@ -664,8 +675,7 @@ def results(limit, refresh):
     # Cargar scan state previo si no hay handler en memoria
     if session.handler is None:
         if not session.load_scan_state():
-            console.print("[red]❌ No hay scan previo.[/red]")
-            sys.exit(1)
+            abort("No hay scan previo.")
     items = session.scan_engine.get_all_results(limit=limit)
     if not items:
         console.print("[yellow]No hay resultados.[/yellow]")
@@ -829,8 +839,7 @@ def apply(entry_id):
     require_connected()
     e = session.cheats.get(entry_id)
     if e is None:
-        console.print(f"[red]❌ Cheat #{entry_id} no encontrado.[/red]")
-        sys.exit(1)
+        abort(f"Cheat #{entry_id} no encontrado.")
     if session.cheats.apply(e):
         console.print(f"[green]✓ Cheat #{entry_id} aplicado en 0x{e.address:016X}[/green]")
     else:
@@ -856,21 +865,11 @@ def scan(target_address, depth, max_range):
     require_attached()
     addr = parse_address(target_address)
     if depth < 1 or depth > 5:
-        console.print("[red]❌ depth debe estar entre 1 y 5[/red]")
-        sys.exit(1)
+        abort("depth debe estar entre 1 y 5")
     # 1. Escanea todas las secciones para llenar PointerList
     pl = PointerList()
     console.print("[cyan]Escaneando secciones buscando qwords que apunten a memoria mapeada…[/cyan]")
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.percentage:>3.0f}%"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("pointer scan…", total=100)
-        def on_progress(p: ScanProgress):
-            progress.update(task, completed=p.percent)
+    with scan_progress("pointer scan…", show_elapsed=False) as on_progress:
         session.scan_engine.pointer_scan(pl, progress_cb=on_progress)
     console.print(f"[green]✓ {pl.count} punteros encontrados.[/green]")
     # 2. DFS para encontrar caminos a addr

@@ -31,3 +31,8 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+
+# Assets Python generados en tiempo de build (ver android/app/build.gradle)
+android/app/src/main/assets/python/
+android/app/build/
+android/.gradle/

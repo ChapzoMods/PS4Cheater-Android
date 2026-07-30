@@ -133,29 +133,96 @@ STR_TO_COMPARE_TYPE = {
 
 
 # ---------------------------------------------------------------------------
-# Conversiones string -> bytes
+# Codecs numéricos — un único sitio donde vive el ancho/formato de cada tipo
 # ---------------------------------------------------------------------------
 
-def string_to_byte(value: str) -> bytes:
-    return struct.pack("<B", int(value))
+EQUAL_TOLERANCE: float = 0.0001   # tolerancia de igualdad en float/double
+FUZZY_TOLERANCE: float = 1.0      # tolerancia de FUZZY_VALUE
 
-def string_to_2_bytes(value: str) -> bytes:
-    return struct.pack("<H", int(value))
 
-def string_to_4_bytes(value: str) -> bytes:
-    return struct.pack("<I", int(value))
+@dataclass(frozen=True)
+class NumericCodec:
+    """
+    Conversiones string<->bytes de un tipo numérico de ancho fijo.
 
-def string_to_8_bytes(value: str) -> bytes:
-    return struct.pack("<Q", int(value))
+    `fmt` es el formato struct del valor y `uint_fmt` el del entero sin signo
+    del mismo ancho, que es el usado en las representaciones hex (para
+    float/double eso reinterpreta los bits, igual que el C# original).
+    """
+    fmt: str
+    uint_fmt: str
+    size: int
+    parse: Callable[[str], object] = int
+    tolerance: float = 0.0        # > 0 solo en tipos de coma flotante
 
-def string_to_float(value: str) -> bytes:
-    return struct.pack("<f", float(value))
+    @property
+    def hex_digits(self) -> int:
+        return self.size * 2
 
-def string_to_double(value: str) -> bytes:
-    return struct.pack("<d", float(value))
+    @property
+    def mask(self) -> int:
+        return (1 << (self.size * 8)) - 1
+
+    def pack(self, value: str) -> bytes:
+        return struct.pack(self.fmt, self.parse(value))
+
+    def pack_hex(self, value: str) -> bytes:
+        return struct.pack(self.uint_fmt, int(value, 16))
+
+    def read(self, data: bytes, offset: int = 0):
+        return struct.unpack_from(self.fmt, data, offset)[0]
+
+    def to_string(self, data: bytes) -> str:
+        return str(self.read(data))
+
+    def to_hex_string(self, data: bytes) -> str:
+        return f"{struct.unpack_from(self.uint_fmt, data)[0]:0{self.hex_digits}X}"
+
+
+U8 = NumericCodec("<B", "<B", 1)
+U16 = NumericCodec("<H", "<H", 2)
+U32 = NumericCodec("<I", "<I", 4)
+U64 = NumericCodec("<Q", "<Q", 8)
+F32 = NumericCodec("<f", "<I", 4, parse=float, tolerance=EQUAL_TOLERANCE)
+F64 = NumericCodec("<d", "<Q", 8, parse=float, tolerance=EQUAL_TOLERANCE)
+
+
+# ---------------------------------------------------------------------------
+# Conversiones string <-> bytes (nombres del port de MemoryHelper.cs)
+# ---------------------------------------------------------------------------
+
+string_to_byte = U8.pack
+string_to_2_bytes = U16.pack
+string_to_4_bytes = U32.pack
+string_to_8_bytes = U64.pack
+string_to_float = F32.pack
+string_to_double = F64.pack
+
+hex_string_to_byte = U8.pack_hex
+hex_string_to_2_bytes = U16.pack_hex
+hex_string_to_4_bytes = U32.pack_hex
+hex_string_to_8_bytes = U64.pack_hex
+hex_string_to_float = F32.pack_hex
+hex_string_to_double = F64.pack_hex
+
+uchar_to_string = U8.to_string
+uint16_to_string = U16.to_string
+uint_to_string = U32.to_string
+ulong_to_string = U64.to_string
+float_to_string = F32.to_string
+double_to_string = F64.to_string
+
+uchar_to_hex_string = U8.to_hex_string
+uint16_to_hex_string = U16.to_hex_string
+uint_to_hex_string = U32.to_hex_string
+ulong_to_hex_string = U64.to_hex_string
+float_to_hex_string = F32.to_hex_string
+double_to_hex_string = F64.to_hex_string
+
 
 def string_to_string_bytes(value: str) -> bytes:
     return value.encode("latin-1", errors="replace")
+
 
 def string_to_hex_bytes(hex_str: str) -> bytes:
     """Convierte 'AABBCC' -> b'\xAA\xBB\xCC'."""
@@ -163,313 +230,108 @@ def string_to_hex_bytes(hex_str: str) -> bytes:
         raise ValueError("hex string must have even length")
     return bytes.fromhex(hex_str)
 
-def hex_string_to_byte(value: str) -> bytes:
-    return struct.pack("<B", int(value, 16))
-
-def hex_string_to_2_bytes(value: str) -> bytes:
-    return struct.pack("<H", int(value, 16))
-
-def hex_string_to_4_bytes(value: str) -> bytes:
-    return struct.pack("<I", int(value, 16))
-
-def hex_string_to_8_bytes(value: str) -> bytes:
-    return struct.pack("<Q", int(value, 16))
-
-def hex_string_to_float(value: str) -> bytes:
-    # C#: BitConverter.GetBytes(float.Parse(value, NumberStyles.HexNumber))
-    # En .NET float.Parse(hex) no es válido; el código original aparentemente lo usa
-    # como uint -> reinterpreta. Hacemos lo mismo: int hex -> struct pack como uint -> reinterpret float.
-    u = int(value, 16)
-    return struct.pack("<I", u)
-
-def hex_string_to_double(value: str) -> bytes:
-    u = int(value, 16)
-    return struct.pack("<Q", u)
-
-
-# ---------------------------------------------------------------------------
-# Conversiones bytes -> string
-# ---------------------------------------------------------------------------
-
-def uchar_to_string(value: bytes) -> str:
-    return str(value[0])
-
-def uint16_to_string(value: bytes) -> str:
-    return str(struct.unpack("<H", value[:2])[0])
-
-def uint_to_string(value: bytes) -> str:
-    return str(struct.unpack("<I", value[:4])[0])
-
-def ulong_to_string(value: bytes) -> str:
-    return str(struct.unpack("<Q", value[:8])[0])
-
-def float_to_string(value: bytes) -> str:
-    return repr(struct.unpack("<f", value[:4])[0])
-
-def double_to_string(value: bytes) -> str:
-    return repr(struct.unpack("<d", value[:8])[0])
 
 def string_to_string(value: bytes) -> str:
     # C#: Encoding.Default.GetString(value) — latin-1-ish
     return value.decode("latin-1", errors="replace")
 
+
 def hex_to_string(value: bytes) -> str:
     return value.hex().upper()
 
-def uchar_to_hex_string(value: bytes) -> str:
-    return f"{value[0]:02X}"
 
-def uint16_to_hex_string(value: bytes) -> str:
-    return f"{struct.unpack('<H', value[:2])[0]:04X}"
-
-def uint_to_hex_string(value: bytes) -> str:
-    return f"{struct.unpack('<I', value[:4])[0]:08X}"
-
-def ulong_to_hex_string(value: bytes) -> str:
-    return f"{struct.unpack('<Q', value[:8])[0]:016X}"
-
-def float_to_hex_string(value: bytes) -> str:
-    return f"{struct.unpack('<I', value[:4])[0]:08X}"
-
-def double_to_hex_string(value: bytes) -> str:
-    return f"{struct.unpack('<Q', value[:8])[0]:016X}"
-
-def string_to_hex_string(value: bytes) -> str:
-    return value.hex().upper()
+string_to_hex_string = hex_to_string
 
 
 # ---------------------------------------------------------------------------
 # Comparadores
-# Signature: (default_value_0: bytes, default_value_1: bytes, old_value: Optional[bytes], new_value: bytes) -> bool
+# Signature: (default_value_0, default_value_1, old_value, new_value) -> bool
+#
+# Cada familia de comparadores (exact, bigger, changed, …) se genera una única
+# vez por codec en vez de escribirse a mano para los 6 tipos numéricos.
 # ---------------------------------------------------------------------------
 
-# --- helpers ---
-def _u8(b: bytes, off: int = 0) -> int: return b[off]
-def _u16(b: bytes, off: int = 0) -> int: return struct.unpack_from("<H", b, off)[0]
-def _u32(b: bytes, off: int = 0) -> int: return struct.unpack_from("<I", b, off)[0]
-def _u64(b: bytes, off: int = 0) -> int: return struct.unpack_from("<Q", b, off)[0]
-def _f32(b: bytes, off: int = 0) -> float: return struct.unpack_from("<f", b, off)[0]
-def _f64(b: bytes, off: int = 0) -> float: return struct.unpack_from("<d", b, off)[0]
+ComparatorFn = Callable[[Optional[bytes], Optional[bytes], Optional[bytes], bytes], bool]
 
-# --- ANY (UnknownInitialValue) ---
-def scan_type_any_uint8(d0, d1, old, new):   return new[0] != 0
-def scan_type_any_uint16(d0, d1, old, new):  return _u16(new) != 0
-def scan_type_any_uint(d0, d1, old, new):    return _u32(new) != 0
-def scan_type_any_ulong(d0, d1, old, new):   return _u64(new) != 0
-def scan_type_any_float(d0, d1, old, new):   return _f32(new) != 0
-def scan_type_any_double(d0, d1, old, new):  return _f64(new) != 0
 
-# --- EXACT ---
-def scan_type_equal_uint8(d0, d1, old, new):  return d0[0] == new[0]
-def scan_type_equal_uint16(d0, d1, old, new): return _u16(d0) == _u16(new)
-def scan_type_equal_uint(d0, d1, old, new):   return _u32(d0) == _u32(new)
-def scan_type_equal_ulong(d0, d1, old, new):  return _u64(d0) == _u64(new)
-def scan_type_equal_float(d0, d1, old, new):  return abs(_f32(d0) - _f32(new)) < 0.0001
-def scan_type_equal_double(d0, d1, old, new): return abs(_f64(d0) - _f64(new)) < 0.0001
-def scan_type_equal_string(d0, d1, old, new):
-    if len(d0) != len(new): raise ValueError("length mismatch")
+def _make_comparators(codec: NumericCodec) -> dict[CompareType, ComparatorFn]:
+    """Construye el mapa CompareType -> comparador para un codec numérico."""
+    read = codec.read
+
+    if codec.tolerance:
+        def equal(a, b) -> bool:
+            return abs(a - b) < codec.tolerance
+
+        def add(a, b):
+            return a + b
+
+        def sub(a, b):
+            return a - b
+    else:
+        def equal(a, b) -> bool:
+            return a == b
+
+        def add(a, b):
+            return (a + b) & codec.mask
+
+        def sub(a, b):
+            return (a - b) & codec.mask
+
+    def nonzero(d0, d1, old, new) -> bool:
+        return read(new) != 0
+
+    return {
+        CompareType.UNKNOWN_INITIAL_VALUE: nonzero,
+        CompareType.POINTER_VALUE: nonzero,
+        CompareType.EXACT_VALUE: lambda d0, d1, old, new: equal(read(d0), read(new)),
+        CompareType.NONE: lambda d0, d1, old, new: not equal(read(d0), read(new)),
+        CompareType.BIGGER_THAN_VALUE: lambda d0, d1, old, new: read(new) > read(d0),
+        CompareType.SMALLER_THAN_VALUE: lambda d0, d1, old, new: read(new) < read(d0),
+        CompareType.BETWEEN_VALUE: lambda d0, d1, old, new: read(d0) <= read(new) <= read(d1),
+        CompareType.CHANGED_VALUE: lambda d0, d1, old, new: not equal(read(old), read(new)),
+        CompareType.UNCHANGED_VALUE: lambda d0, d1, old, new: equal(read(old), read(new)),
+        CompareType.INCREASED_VALUE: lambda d0, d1, old, new: read(new) > read(old),
+        CompareType.DECREASED_VALUE: lambda d0, d1, old, new: read(new) < read(old),
+        CompareType.INCREASED_VALUE_BY:
+            lambda d0, d1, old, new: equal(read(new), add(read(old), read(d0))),
+        CompareType.DECREASED_VALUE_BY:
+            lambda d0, d1, old, new: equal(read(new), sub(read(old), read(d0))),
+        CompareType.FUZZY_VALUE:
+            lambda d0, d1, old, new: abs(read(d0) - read(new)) < FUZZY_TOLERANCE,
+    }
+
+
+def _scan_type_equal_bytes(d0, d1, old, new) -> bool:
+    """Comparación exacta de string/hex: los buffers deben medir lo mismo."""
+    if len(d0) != len(new):
+        raise ValueError("length mismatch")
     return d0 == new
-def scan_type_equal_hex(d0, d1, old, new):
-    if len(d0) != len(new): raise ValueError("length mismatch")
-    return d0 == new
-
-# --- NOT (inverso de EXACT) ---
-def scan_type_not_uint8(d0, d1, old, new):  return d0[0] != new[0]
-def scan_type_not_uint16(d0, d1, old, new): return _u16(d0) != _u16(new)
-def scan_type_not_uint(d0, d1, old, new):   return _u32(d0) != _u32(new)
-def scan_type_not_ulong(d0, d1, old, new):  return _u64(d0) != _u64(new)
-def scan_type_not_float(d0, d1, old, new):  return not scan_type_equal_float(d0, d1, old, new)
-def scan_type_not_double(d0, d1, old, new): return not scan_type_equal_double(d0, d1, old, new)
-
-# --- BIGGER_THAN ---
-def scan_type_bigger_uint8(d0, d1, old, new):  return new[0] > d0[0]
-def scan_type_bigger_uint16(d0, d1, old, new): return _u16(new) > _u16(d0)
-def scan_type_bigger_uint(d0, d1, old, new):   return _u32(new) > _u32(d0)
-def scan_type_bigger_ulong(d0, d1, old, new):  return _u64(new) > _u64(d0)
-def scan_type_bigger_float(d0, d1, old, new):  return _f32(new) > _f32(d0)
-def scan_type_bigger_double(d0, d1, old, new): return _f64(new) > _f64(d0)
-
-# --- SMALLER_THAN ---
-def scan_type_less_uint8(d0, d1, old, new):  return new[0] < d0[0]
-def scan_type_less_uint16(d0, d1, old, new): return _u16(new) < _u16(d0)
-def scan_type_less_uint(d0, d1, old, new):   return _u32(new) < _u32(d0)
-def scan_type_less_ulong(d0, d1, old, new):  return _u64(new) < _u64(d0)
-def scan_type_less_float(d0, d1, old, new):  return _f32(new) < _f32(d0)
-def scan_type_less_double(d0, d1, old, new): return _f64(new) < _f64(d0)
-
-# --- BETWEEN ---
-def scan_type_between_uint8(d0, d1, old, new):  return d0[0] <= new[0] <= d1[0]
-def scan_type_between_uint16(d0, d1, old, new): return _u16(d0) <= _u16(new) <= _u16(d1)
-def scan_type_between_uint(d0, d1, old, new):   return _u32(d0) <= _u32(new) <= _u32(d1)
-def scan_type_between_ulong(d0, d1, old, new):  return _u64(d0) <= _u64(new) <= _u64(d1)
-def scan_type_between_float(d0, d1, old, new):  return _f32(d0) <= _f32(new) <= _f32(d1)
-def scan_type_between_double(d0, d1, old, new): return _f64(d0) <= _f64(new) <= _f64(d1)
-
-# --- CHANGED ---
-def scan_type_changed_uint8(d0, d1, old, new):  return old[0] != new[0]
-def scan_type_changed_uint16(d0, d1, old, new): return _u16(old) != _u16(new)
-def scan_type_changed_uint(d0, d1, old, new):   return _u32(old) != _u32(new)
-def scan_type_changed_ulong(d0, d1, old, new):  return _u64(old) != _u64(new)
-def scan_type_changed_float(d0, d1, old, new):  return not scan_type_unchanged_float(d0, d1, old, new)
-def scan_type_changed_double(d0, d1, old, new): return not scan_type_unchanged_double(d0, d1, old, new)
-
-# --- UNCHANGED ---
-def scan_type_unchanged_uint8(d0, d1, old, new):  return old[0] == new[0]
-def scan_type_unchanged_uint16(d0, d1, old, new): return _u16(old) == _u16(new)
-def scan_type_unchanged_uint(d0, d1, old, new):   return _u32(old) == _u32(new)
-def scan_type_unchanged_ulong(d0, d1, old, new):  return _u64(old) == _u64(new)
-def scan_type_unchanged_float(d0, d1, old, new):  return abs(_f32(old) - _f32(new)) < 0.0001
-def scan_type_unchanged_double(d0, d1, old, new): return abs(_f64(old) - _f64(new)) < 0.0001
-
-# --- INCREASED ---
-def scan_type_increased_uint8(d0, d1, old, new):  return new[0] > old[0]
-def scan_type_increased_uint16(d0, d1, old, new): return _u16(new) > _u16(old)
-def scan_type_increased_uint(d0, d1, old, new):   return _u32(new) > _u32(old)
-def scan_type_increased_ulong(d0, d1, old, new):  return _u64(new) > _u64(old)
-def scan_type_increased_float(d0, d1, old, new):  return _f32(new) > _f32(old)
-def scan_type_increased_double(d0, d1, old, new): return _f64(new) > _f64(old)
-
-# --- INCREASED_BY ---
-def scan_type_increased_by_uint8(d0, d1, old, new):  return new[0] == old[0] + d0[0]
-def scan_type_increased_by_uint16(d0, d1, old, new): return _u16(new) == _u16(old) + _u16(d0)
-def scan_type_increased_by_uint(d0, d1, old, new):   return _u32(new) == (_u32(old) + _u32(d0)) & 0xFFFFFFFF
-def scan_type_increased_by_ulong(d0, d1, old, new):  return _u64(new) == (_u64(old) + _u64(d0)) & 0xFFFFFFFFFFFFFFFF
-def scan_type_increased_by_float(d0, d1, old, new):  return abs(_f32(new) - (_f32(d0) + _f32(old))) < 0.0001
-def scan_type_increased_by_double(d0, d1, old, new): return abs(_f64(new) - (_f64(d0) + _f64(old))) < 0.0001
-
-# --- DECREASED ---
-def scan_type_decreased_uint8(d0, d1, old, new):  return new[0] < old[0]
-def scan_type_decreased_uint16(d0, d1, old, new): return _u16(new) < _u16(old)
-def scan_type_decreased_uint(d0, d1, old, new):   return _u32(new) < _u32(old)
-def scan_type_decreased_ulong(d0, d1, old, new):  return _u64(new) < _u64(old)
-def scan_type_decreased_float(d0, d1, old, new):  return _f32(new) < _f32(old)
-def scan_type_decreased_double(d0, d1, old, new): return _f64(new) < _f64(old)
-
-# --- DECREASED_BY ---
-def scan_type_decreased_by_uint8(d0, d1, old, new):  return new[0] == old[0] - d0[0]
-def scan_type_decreased_by_uint16(d0, d1, old, new): return _u16(new) == (_u16(old) - _u16(d0)) & 0xFFFF
-def scan_type_decreased_by_uint(d0, d1, old, new):   return _u32(new) == (_u32(old) - _u32(d0)) & 0xFFFFFFFF
-def scan_type_decreased_by_ulong(d0, d1, old, new):  return _u64(new) == (_u64(old) - _u64(d0)) & 0xFFFFFFFFFFFFFFFF
-def scan_type_decreased_by_float(d0, d1, old, new):  return abs(_f32(new) - (_f32(old) - _f32(d0))) < 0.0001
-def scan_type_decreased_by_double(d0, d1, old, new): return abs(_f64(new) - (_f64(old) - _f64(d0))) < 0.0001
-
-# --- FUZZY_EQUAL (solo float/double, tolerancia 1.0) ---
-def scan_type_fuzzy_equal_float(d0, d1, old, new):  return abs(_f32(d0) - _f32(new)) < 1
-def scan_type_fuzzy_equal_double(d0, d1, old, new): return abs(_f64(d0) - _f64(new)) < 1
 
 
 # ---------------------------------------------------------------------------
 # Tabla de comparadores por (ValueType, CompareType)
 # ---------------------------------------------------------------------------
 
-ComparatorFn = Callable[[Optional[bytes], Optional[bytes], Optional[bytes], bytes], bool]
+NUMERIC_CODECS: dict[ValueType, NumericCodec] = {
+    ValueType.BYTE_TYPE:   U8,
+    ValueType.USHORT_TYPE: U16,
+    ValueType.UINT_TYPE:   U32,
+    ValueType.ULONG_TYPE:  U64,
+    ValueType.FLOAT_TYPE:  F32,
+    ValueType.DOUBLE_TYPE: F64,
+}
 
 _COMPARATORS: dict[tuple[ValueType, CompareType], ComparatorFn] = {
-    # ANY
-    (ValueType.BYTE_TYPE,   CompareType.UNKNOWN_INITIAL_VALUE): scan_type_any_uint8,
-    (ValueType.USHORT_TYPE, CompareType.UNKNOWN_INITIAL_VALUE): scan_type_any_uint16,
-    (ValueType.UINT_TYPE,   CompareType.UNKNOWN_INITIAL_VALUE): scan_type_any_uint,
-    (ValueType.ULONG_TYPE,  CompareType.UNKNOWN_INITIAL_VALUE): scan_type_any_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.UNKNOWN_INITIAL_VALUE): scan_type_any_float,
-    (ValueType.DOUBLE_TYPE, CompareType.UNKNOWN_INITIAL_VALUE): scan_type_any_double,
-
-    # EXACT
-    (ValueType.BYTE_TYPE,   CompareType.EXACT_VALUE): scan_type_equal_uint8,
-    (ValueType.USHORT_TYPE, CompareType.EXACT_VALUE): scan_type_equal_uint16,
-    (ValueType.UINT_TYPE,   CompareType.EXACT_VALUE): scan_type_equal_uint,
-    (ValueType.ULONG_TYPE,  CompareType.EXACT_VALUE): scan_type_equal_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.EXACT_VALUE): scan_type_equal_float,
-    (ValueType.DOUBLE_TYPE, CompareType.EXACT_VALUE): scan_type_equal_double,
-    (ValueType.STRING_TYPE, CompareType.EXACT_VALUE): scan_type_equal_string,
-    (ValueType.HEX_TYPE,    CompareType.EXACT_VALUE): scan_type_equal_hex,
-
-    # NOT (invertido)
-    (ValueType.BYTE_TYPE,   CompareType.NONE): scan_type_not_uint8,  # NONE == NOT en este contexto
-    (ValueType.USHORT_TYPE, CompareType.NONE): scan_type_not_uint16,
-    (ValueType.UINT_TYPE,   CompareType.NONE): scan_type_not_uint,
-    (ValueType.ULONG_TYPE,  CompareType.NONE): scan_type_not_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.NONE): scan_type_not_float,
-    (ValueType.DOUBLE_TYPE, CompareType.NONE): scan_type_not_double,
-
-    # BIGGER
-    (ValueType.BYTE_TYPE,   CompareType.BIGGER_THAN_VALUE): scan_type_bigger_uint8,
-    (ValueType.USHORT_TYPE, CompareType.BIGGER_THAN_VALUE): scan_type_bigger_uint16,
-    (ValueType.UINT_TYPE,   CompareType.BIGGER_THAN_VALUE): scan_type_bigger_uint,
-    (ValueType.ULONG_TYPE,  CompareType.BIGGER_THAN_VALUE): scan_type_bigger_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.BIGGER_THAN_VALUE): scan_type_bigger_float,
-    (ValueType.DOUBLE_TYPE, CompareType.BIGGER_THAN_VALUE): scan_type_bigger_double,
-
-    # SMALLER
-    (ValueType.BYTE_TYPE,   CompareType.SMALLER_THAN_VALUE): scan_type_less_uint8,
-    (ValueType.USHORT_TYPE, CompareType.SMALLER_THAN_VALUE): scan_type_less_uint16,
-    (ValueType.UINT_TYPE,   CompareType.SMALLER_THAN_VALUE): scan_type_less_uint,
-    (ValueType.ULONG_TYPE,  CompareType.SMALLER_THAN_VALUE): scan_type_less_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.SMALLER_THAN_VALUE): scan_type_less_float,
-    (ValueType.DOUBLE_TYPE, CompareType.SMALLER_THAN_VALUE): scan_type_less_double,
-
-    # BETWEEN
-    (ValueType.BYTE_TYPE,   CompareType.BETWEEN_VALUE): scan_type_between_uint8,
-    (ValueType.USHORT_TYPE, CompareType.BETWEEN_VALUE): scan_type_between_uint16,
-    (ValueType.UINT_TYPE,   CompareType.BETWEEN_VALUE): scan_type_between_uint,
-    (ValueType.ULONG_TYPE,  CompareType.BETWEEN_VALUE): scan_type_between_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.BETWEEN_VALUE): scan_type_between_float,
-    (ValueType.DOUBLE_TYPE, CompareType.BETWEEN_VALUE): scan_type_between_double,
-
-    # CHANGED
-    (ValueType.BYTE_TYPE,   CompareType.CHANGED_VALUE): scan_type_changed_uint8,
-    (ValueType.USHORT_TYPE, CompareType.CHANGED_VALUE): scan_type_changed_uint16,
-    (ValueType.UINT_TYPE,   CompareType.CHANGED_VALUE): scan_type_changed_uint,
-    (ValueType.ULONG_TYPE,  CompareType.CHANGED_VALUE): scan_type_changed_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.CHANGED_VALUE): scan_type_changed_float,
-    (ValueType.DOUBLE_TYPE, CompareType.CHANGED_VALUE): scan_type_changed_double,
-
-    # UNCHANGED
-    (ValueType.BYTE_TYPE,   CompareType.UNCHANGED_VALUE): scan_type_unchanged_uint8,
-    (ValueType.USHORT_TYPE, CompareType.UNCHANGED_VALUE): scan_type_unchanged_uint16,
-    (ValueType.UINT_TYPE,   CompareType.UNCHANGED_VALUE): scan_type_unchanged_uint,
-    (ValueType.ULONG_TYPE,  CompareType.UNCHANGED_VALUE): scan_type_unchanged_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.UNCHANGED_VALUE): scan_type_unchanged_float,
-    (ValueType.DOUBLE_TYPE, CompareType.UNCHANGED_VALUE): scan_type_unchanged_double,
-
-    # INCREASED
-    (ValueType.BYTE_TYPE,   CompareType.INCREASED_VALUE): scan_type_increased_uint8,
-    (ValueType.USHORT_TYPE, CompareType.INCREASED_VALUE): scan_type_increased_uint16,
-    (ValueType.UINT_TYPE,   CompareType.INCREASED_VALUE): scan_type_increased_uint,
-    (ValueType.ULONG_TYPE,  CompareType.INCREASED_VALUE): scan_type_increased_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.INCREASED_VALUE): scan_type_increased_float,
-    (ValueType.DOUBLE_TYPE, CompareType.INCREASED_VALUE): scan_type_increased_double,
-
-    # INCREASED_BY
-    (ValueType.BYTE_TYPE,   CompareType.INCREASED_VALUE_BY): scan_type_increased_by_uint8,
-    (ValueType.USHORT_TYPE, CompareType.INCREASED_VALUE_BY): scan_type_increased_by_uint16,
-    (ValueType.UINT_TYPE,   CompareType.INCREASED_VALUE_BY): scan_type_increased_by_uint,
-    (ValueType.ULONG_TYPE,  CompareType.INCREASED_VALUE_BY): scan_type_increased_by_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.INCREASED_VALUE_BY): scan_type_increased_by_float,
-    (ValueType.DOUBLE_TYPE, CompareType.INCREASED_VALUE_BY): scan_type_increased_by_double,
-
-    # DECREASED
-    (ValueType.BYTE_TYPE,   CompareType.DECREASED_VALUE): scan_type_decreased_uint8,
-    (ValueType.USHORT_TYPE, CompareType.DECREASED_VALUE): scan_type_decreased_uint16,
-    (ValueType.UINT_TYPE,   CompareType.DECREASED_VALUE): scan_type_decreased_uint,
-    (ValueType.ULONG_TYPE,  CompareType.DECREASED_VALUE): scan_type_decreased_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.DECREASED_VALUE): scan_type_decreased_float,
-    (ValueType.DOUBLE_TYPE, CompareType.DECREASED_VALUE): scan_type_decreased_double,
-
-    # DECREASED_BY
-    (ValueType.BYTE_TYPE,   CompareType.DECREASED_VALUE_BY): scan_type_decreased_by_uint8,
-    (ValueType.USHORT_TYPE, CompareType.DECREASED_VALUE_BY): scan_type_decreased_by_uint16,
-    (ValueType.UINT_TYPE,   CompareType.DECREASED_VALUE_BY): scan_type_decreased_by_uint,
-    (ValueType.ULONG_TYPE,  CompareType.DECREASED_VALUE_BY): scan_type_decreased_by_ulong,
-    (ValueType.FLOAT_TYPE,  CompareType.DECREASED_VALUE_BY): scan_type_decreased_by_float,
-    (ValueType.DOUBLE_TYPE, CompareType.DECREASED_VALUE_BY): scan_type_decreased_by_double,
-
-    # FUZZY (solo float/double)
-    (ValueType.FLOAT_TYPE,  CompareType.FUZZY_VALUE): scan_type_fuzzy_equal_float,
-    (ValueType.DOUBLE_TYPE, CompareType.FUZZY_VALUE): scan_type_fuzzy_equal_double,
-
-    # POINTER (cualquier ulong no-cero — reusamos between_ulong)
-    (ValueType.ULONG_TYPE, CompareType.POINTER_VALUE): scan_type_any_ulong,
+    (value_type, compare_type): comparer
+    for value_type, codec in NUMERIC_CODECS.items()
+    for compare_type, comparer in _make_comparators(codec).items()
+    # FUZZY solo aplica a float/double; POINTER_VALUE solo a uint64
+    if (compare_type != CompareType.FUZZY_VALUE or codec.tolerance)
+    and (compare_type != CompareType.POINTER_VALUE or value_type == ValueType.ULONG_TYPE)
 }
+
+_COMPARATORS[(ValueType.STRING_TYPE, CompareType.EXACT_VALUE)] = _scan_type_equal_bytes
+_COMPARATORS[(ValueType.HEX_TYPE, CompareType.EXACT_VALUE)] = _scan_type_equal_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -506,103 +368,59 @@ class MemoryTypeHandler:
         return self.bytes_to_string(b)
 
 
+# Conversiones y alineación por tipo de valor: (codec, alineación cuando is_aligned)
+_NUMERIC_TYPE_SPECS: dict[ValueType, tuple[NumericCodec, int]] = {
+    ValueType.BYTE_TYPE:    (U8, 1),
+    ValueType.USHORT_TYPE:  (U16, 2),
+    ValueType.UINT_TYPE:    (U32, 4),
+    ValueType.ULONG_TYPE:   (U64, 4),
+    ValueType.FLOAT_TYPE:   (F32, 4),
+    ValueType.DOUBLE_TYPE:  (F64, 4),
+    ValueType.POINTER_TYPE: (U64, 4),
+}
+
+# Flags (parse_first_value, parse_second_value) de InitMemoryHandler; el resto
+# de comparaciones solo necesita el primer valor.
+_PARSE_FLAGS: dict[CompareType, tuple[bool, bool]] = {
+    CompareType.UNKNOWN_INITIAL_VALUE: (False, False),
+    CompareType.INCREASED_VALUE:       (False, False),
+    CompareType.DECREASED_VALUE:       (False, False),
+    CompareType.POINTER_VALUE:         (False, False),
+    CompareType.BETWEEN_VALUE:         (True, True),
+}
+
+
 def make_handler(value_type: ValueType, compare_type: CompareType,
                  is_aligned: bool = True, type_length: int = 0) -> MemoryTypeHandler:
     """
     Crea un MemoryTypeHandler configurado para el par (value_type, compare_type).
     Replica InitMemoryHandler() de MemoryHelper.cs.
     """
-    # Defaults
-    length = 0
-    alignment = 1
-    s2b = None
-    b2s = None
-    h2b = None
-    b2h = None
-
-    if value_type == ValueType.BYTE_TYPE:
-        length = 1
-        alignment = 1
-        s2b = string_to_byte;  b2s = uchar_to_string
-        h2b = hex_string_to_byte; b2h = uchar_to_hex_string
-    elif value_type == ValueType.USHORT_TYPE:
-        length = 2
-        alignment = 2 if is_aligned else 1
-        s2b = string_to_2_bytes; b2s = uint16_to_string
-        h2b = hex_string_to_2_bytes; b2h = uint16_to_hex_string
-    elif value_type == ValueType.UINT_TYPE:
-        length = 4
-        alignment = 4 if is_aligned else 1
-        s2b = string_to_4_bytes; b2s = uint_to_string
-        h2b = hex_string_to_4_bytes; b2h = uint_to_hex_string
-    elif value_type == ValueType.ULONG_TYPE:
-        length = 8
-        alignment = 4 if is_aligned else 1
-        s2b = string_to_8_bytes; b2s = ulong_to_string
-        h2b = hex_string_to_8_bytes; b2h = ulong_to_hex_string
-    elif value_type == ValueType.FLOAT_TYPE:
-        length = 4
-        alignment = 4 if is_aligned else 1
-        s2b = string_to_float; b2s = float_to_string
-        h2b = hex_string_to_float; b2h = float_to_hex_string
-    elif value_type == ValueType.DOUBLE_TYPE:
-        length = 8
-        alignment = 4 if is_aligned else 1
-        s2b = string_to_double; b2s = double_to_string
-        h2b = hex_string_to_double; b2h = double_to_hex_string
+    if value_type in _NUMERIC_TYPE_SPECS:
+        codec, aligned_alignment = _NUMERIC_TYPE_SPECS[value_type]
+        length = codec.size
+        alignment = aligned_alignment if is_aligned else 1
+        s2b, b2s = codec.pack, codec.to_string
+        h2b, b2h = codec.pack_hex, codec.to_hex_string
     elif value_type == ValueType.HEX_TYPE:
         length = max(0, type_length // 2)
         alignment = 1
-        s2b = string_to_hex_bytes; b2s = hex_to_string
-        h2b = None; b2h = hex_to_string
+        s2b, b2s = string_to_hex_bytes, hex_to_string
+        h2b, b2h = None, hex_to_string
     elif value_type == ValueType.STRING_TYPE:
         length = type_length
         alignment = 1
-        s2b = string_to_string_bytes; b2s = string_to_string
-        h2b = None; b2h = string_to_hex_string
-    elif value_type == ValueType.POINTER_TYPE:
-        length = 8
-        alignment = 4 if is_aligned else 1
-        s2b = string_to_8_bytes; b2s = ulong_to_string
-        h2b = hex_string_to_8_bytes; b2h = ulong_to_hex_string
+        s2b, b2s = string_to_string_bytes, string_to_string
+        h2b, b2h = None, string_to_hex_string
     else:
         raise ValueError(f"unsupported value_type: {value_type}")
 
-    # Comparator lookup
     try:
         comparer = _COMPARATORS[(value_type, compare_type)]
     except KeyError:
         raise ValueError(f"unsupported (value_type={value_type.name}, compare_type={compare_type.name})")
 
-    # Parse flags (copia de InitMemoryHandler switch compareType)
-    if compare_type == CompareType.UNKNOWN_INITIAL_VALUE:
-        parse_first, parse_second = False, False
-    elif compare_type == CompareType.FUZZY_VALUE:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.EXACT_VALUE:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.CHANGED_VALUE:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.UNCHANGED_VALUE:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.INCREASED_VALUE:
-        parse_first, parse_second = False, False
-    elif compare_type == CompareType.INCREASED_VALUE_BY:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.DECREASED_VALUE:
-        parse_first, parse_second = False, False
-    elif compare_type == CompareType.DECREASED_VALUE_BY:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.BIGGER_THAN_VALUE:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.SMALLER_THAN_VALUE:
-        parse_first, parse_second = True, False
-    elif compare_type == CompareType.BETWEEN_VALUE:
-        parse_first, parse_second = True, True
-    elif compare_type == CompareType.POINTER_VALUE:
-        parse_first, parse_second = False, False
-    else:
-        parse_first, parse_second = True, False
+    parse_first, parse_second = _PARSE_FLAGS.get(compare_type, (True, False))
 
     return MemoryTypeHandler(
         value_type=value_type,
