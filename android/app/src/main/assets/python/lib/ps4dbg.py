@@ -27,6 +27,7 @@ Referencias:
 
 from __future__ import annotations
 
+import logging
 import socket
 import struct
 import threading
@@ -51,6 +52,9 @@ class PS4DBGNotConnected(Exception):
     """Se intentó usar una operación sin estar conectado."""
 
 
+logger = logging.getLogger(__name__)
+
+
 class PS4DBG:
     """
     Cliente TCP thread-safe de una PS4 con ps4debug/GoldHEN cargado.
@@ -70,6 +74,7 @@ class PS4DBG:
         self._lock = threading.RLock()
         self._connected = False
         self._version: str = ""
+        self._last_error: Optional[BaseException] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -82,6 +87,11 @@ class PS4DBG:
     @property
     def version(self) -> str:
         return self._version
+
+    @property
+    def last_error(self) -> Optional[BaseException]:
+        """Última excepción capturada por connect()/disconnect() (None si no hubo)."""
+        return self._last_error
 
     # ------------------------------------------------------------------
     # Conexión
@@ -102,35 +112,50 @@ class PS4DBG:
                 sock.settimeout(self.timeout)
                 self._sock = sock
                 self._connected = True
+                self._last_error = None
                 return True
-            except OSError:
+            except OSError as exc:
                 self._connected = False
                 self._sock = None
+                self._last_error = exc
+                logger.warning("connect to %s:%d failed: %s", self.ip, self.port, exc)
                 return False
 
     def disconnect(self) -> bool:
-        """Cierra limpiamente la conexión enviando CMD_CONSOLE_END."""
+        """
+        Cierra la conexión enviando CMD_CONSOLE_END.
+
+        El cierre es best-effort (el socket queda cerrado en cualquier caso) pero
+        el resultado se reporta: devuelve False si algún paso falló y deja la
+        excepción en `last_error`.
+        """
         with self._lock:
             if self._sock is None:
                 self._connected = False
                 return True
+            clean = True
             try:
-                # Best-effort: avisamos que cerramos. Si falla, igual cerramos.
                 try:
                     self._send_cmd_no_payload(CMD.CMD_CONSOLE_END, expect_status=False)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    clean = False
+                    self._last_error = exc
+                    logger.warning("CMD_CONSOLE_END to %s:%d failed: %s", self.ip, self.port, exc)
                 self._sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            except OSError as exc:
+                clean = False
+                self._last_error = exc
+                logger.debug("socket shutdown on %s:%d failed: %s", self.ip, self.port, exc)
             finally:
                 try:
                     self._sock.close()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    clean = False
+                    self._last_error = exc
+                    logger.warning("socket close on %s:%d failed: %s", self.ip, self.port, exc)
                 self._sock = None
                 self._connected = False
-            return True
+            return clean
 
     def __enter__(self):
         self.connect()
@@ -231,13 +256,20 @@ class PS4DBG:
             entries = P.parse_process_maps(data)
             return ProcessMap(pid=pid, entries=entries)
 
-    def read_memory(self, pid: int, address: int, length: int) -> bytes:
+    def read_memory(self, pid: int, address: int, length: int,
+                    zero_fill_on_error: bool = False) -> bytes:
         """
         CMD_PROC_READ: lee `length` bytes desde `address` del proceso `pid`.
 
-        Si la PS4 devuelve menos bytes de los pedidos (no debería), rellenamos
-        con ceros para que el caller reciba siempre `length` bytes (igual que
-        hace el C# original que devuelve `new byte[length]` en caso de error).
+        Por defecto los errores se propagan (PS4DBGError si la consola responde
+        un status de error, OSError si el socket falla): devolver ceros en
+        silencio hace que un fallo de lectura sea indistinguible de memoria
+        realmente a cero.
+
+        `zero_fill_on_error=True` restaura el comportamiento del C# original
+        (`new byte[length]`) para callers que prefieren tolerar huecos; incluso
+        entonces el fallo se registra vía logging y los errores de socket se
+        propagan, porque implican que la conexión ya no es usable.
         """
         if length <= 0:
             return b""
@@ -247,8 +279,11 @@ class PS4DBG:
             try:
                 self._check_status(f"CMD_PROC_READ pid={pid} addr=0x{address:X} len={length}")
                 return self._recv_exact(length)
-            except (PS4DBGError, OSError):
-                # En caso de error devolvemos zeros (igual que MemoryHelper.cs:582)
+            except PS4DBGError as exc:
+                if not zero_fill_on_error:
+                    raise
+                logger.warning("read of %d bytes at 0x%X (pid=%d) failed, zero-filling: %s",
+                               length, address, pid, exc)
                 return b"\x00" * length
 
     def write_memory(self, pid: int, address: int, data: bytes) -> None:
@@ -337,7 +372,6 @@ class PS4DBG:
         Requiere saber la IP local para calcular la dirección de broadcast.
         Returns: IP de la PS4 o None si no responde.
         """
-        import errno
         try:
             local_ip = PS4DBG._get_local_ip()
             if not local_ip:
@@ -351,12 +385,15 @@ class PS4DBG:
                 try:
                     data, addr = s.recvfrom(64)
                 except socket.timeout:
+                    logger.debug("no PS4 answered the discovery broadcast within %.1fs", timeout)
                     return None
                 if len(data) >= 4:
                     val = struct.unpack("<I", data[:4])[0]
                     if val == BROADCAST_MAGIC:
                         return addr[0]
-        except OSError:
+                logger.debug("discovery got an unexpected answer from %s: %r", addr, data)
+        except OSError as exc:
+            logger.warning("PS4 discovery broadcast failed: %s", exc)
             return None
         return None
 
@@ -370,7 +407,8 @@ class PS4DBG:
                 return s.getsockname()[0]
             finally:
                 s.close()
-        except OSError:
+        except OSError as exc:
+            logger.warning("could not determine the local IP: %s", exc)
             return None
 
     @staticmethod
@@ -410,8 +448,12 @@ class PS4DBGPool:
             if not conn.connect():
                 # Si falla la primera, no tiene sentido seguir
                 if i == 0:
+                    logger.warning("pool connect to %s:%d failed: %s",
+                                   self.ip, self.port, conn.last_error)
                     return False
-                # Si fallan otras, igual continuamos con menos
+                # Si fallan otras, igual continuamos con menos (escaneo más lento)
+                logger.warning("pool degraded to %d/%d connections to %s:%d: %s",
+                               i, self.size, self.ip, self.port, conn.last_error)
                 break
         return self._connections[0].is_connected
 
@@ -419,8 +461,9 @@ class PS4DBGPool:
         for conn in self._connections:
             try:
                 conn.disconnect()
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning("disconnect of a pooled connection to %s:%d failed: %s",
+                               self.ip, self.port, exc)
 
     def get(self, idx: int = 0) -> PS4DBG:
         """Devuelve la conexión idx-ésima."""

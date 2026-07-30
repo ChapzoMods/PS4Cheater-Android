@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -29,8 +30,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+
+private const val TAG = "PS4Cheater"
+private const val ZIP_NAME = "ps4cheater.zip"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -354,12 +359,16 @@ fun WebViewScreen(onBack: () -> Unit) {
 fun extractPythonAssetsToDownloads(context: Context): String {
     return try {
         // 1. Build the zip into the app cache dir first
-        val cacheZip = File(context.cacheDir, "ps4cheater.zip")
+        val cacheZip = File(context.cacheDir, ZIP_NAME)
         ZipOutputStream(cacheZip.outputStream().buffered()).use { zos ->
             val dirs = listOf("lib", "core", "cli")
             for (dir in dirs) {
                 val assetPath = "python/$dir"
-                val files = context.assets.list(assetPath) ?: emptyArray()
+                val files = context.assets.list(assetPath)
+                    ?: throw IOException("no se pudo listar los assets de $assetPath")
+                if (files.isEmpty()) {
+                    throw IOException("el APK no contiene scripts en $assetPath")
+                }
                 for (file in files) {
                     val entryPath = "$dir/$file"
                     zos.putNextEntry(ZipEntry(entryPath))
@@ -386,21 +395,28 @@ fun extractPythonAssetsToDownloads(context: Context): String {
             }
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             if (uri != null) {
-                resolver.openOutputStream(uri)?.use { out ->
+                val out = resolver.openOutputStream(uri)
+                    ?: throw IOException("MediaStore no dio un stream de escritura para $uri")
+                out.use { stream ->
                     cacheZip.inputStream().use { input ->
-                        input.copyTo(out)
+                        input.copyTo(stream)
                     }
                 }
                 values.clear()
                 values.put(MediaStore.Downloads.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
+                val updated = resolver.update(uri, values, null, null)
+                if (updated != 1) {
+                    throw IOException("MediaStore no publicó $ZIP_NAME (update devolvió $updated)")
+                }
             }
             uri
         } else {
             // Android 9 and below: write directly to the public Downloads directory
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!downloadsDir.exists()) downloadsDir.mkdirs()
-            val targetFile = File(downloadsDir, "ps4cheater.zip")
+            if (!downloadsDir.exists() && !downloadsDir.mkdirs()) {
+                throw IOException("no se pudo crear el directorio ${downloadsDir.absolutePath}")
+            }
+            val targetFile = File(downloadsDir, ZIP_NAME)
             cacheZip.inputStream().use { input ->
                 targetFile.outputStream().use { out ->
                     input.copyTo(out)
@@ -410,6 +426,7 @@ fun extractPythonAssetsToDownloads(context: Context): String {
         }
 
         if (downloadedUri == null) {
+            Log.e(TAG, "MediaStore.insert returned null for $ZIP_NAME")
             "Error: no se pudo crear ps4cheater.zip en Downloads (MediaStore devolvió null)"
         } else {
             "✓ ps4cheater.zip guardado en Downloads\n\n" +
@@ -419,13 +436,17 @@ fun extractPythonAssetsToDownloads(context: Context): String {
                     "unzip ~/storage/downloads/ps4cheater.zip -d ~/ps4cheater"
         }
     } catch (e: Exception) {
+        Log.e(TAG, "packaging $ZIP_NAME to Downloads failed", e)
         "Error: ${e.message ?: e.toString()}"
     } finally {
         // Clean up the cached zip regardless of success/failure
         try {
-            File(context.cacheDir, "ps4cheater.zip").delete()
-        } catch (_: Exception) {
-            // ignore cleanup errors
+            val cached = File(context.cacheDir, ZIP_NAME)
+            if (cached.exists() && !cached.delete()) {
+                Log.w(TAG, "could not delete the cached zip ${cached.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "cleanup of the cached zip failed", e)
         }
     }
 }
