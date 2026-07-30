@@ -18,14 +18,15 @@ Optimización:
 
 from __future__ import annotations
 
+import logging
 import struct
 import threading
 import queue
 import time
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
-from lib import PS4DBG, PS4DBGPool
+from lib import PS4DBG, PS4DBGError, PS4DBGPool
 from .process_manager import MappedSection, MappedSectionList, ResultList
 from .types import (
     CompareType, MemoryTypeHandler, ValueType,
@@ -38,6 +39,8 @@ try:
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -53,14 +56,14 @@ DEFAULT_NUM_COMPARERS: int = 2
 # Utilidades para escaneo vectorial con numpy
 # ---------------------------------------------------------------------------
 
-_NUMPY_DTYPES = {
+_NUMPY_DTYPES: Dict[ValueType, object] = {
     ValueType.BYTE_TYPE:   np.uint8,
     ValueType.USHORT_TYPE: np.uint16,
     ValueType.UINT_TYPE:   np.uint32,
     ValueType.ULONG_TYPE:  np.uint64,
     ValueType.FLOAT_TYPE:  np.float32,
     ValueType.DOUBLE_TYPE: np.float64,
-}
+} if HAS_NUMPY else {}
 
 
 def _new_scan_vectorized(
@@ -230,6 +233,8 @@ class ScanProgress:
     percent: float
     elapsed_seconds: float
     results_so_far: int
+    failed_reads: int = 0        # chunks que la consola no pudo leer (se omiten)
+    failed_bytes: int = 0        # bytes cubiertos por esos chunks
 
 
 class ScanEngine:
@@ -258,6 +263,40 @@ class ScanEngine:
 
         self._cancel_event = threading.Event()
         self._scan_lock = threading.Lock()
+        self._failed_reads: int = 0
+        self._failed_bytes: int = 0
+
+    # ------------------------------------------------------------------
+    # Lecturas fallidas
+    # ------------------------------------------------------------------
+
+    @property
+    def failed_reads(self) -> int:
+        """Chunks omitidos por error de lectura en el último escaneo."""
+        return self._failed_reads
+
+    @property
+    def failed_bytes(self) -> int:
+        """Bytes no escaneados por errores de lectura en el último escaneo."""
+        return self._failed_bytes
+
+    def _read_chunk(self, addr: int, chunk_len: int) -> Optional[bytes]:
+        """
+        Lee un chunk de memoria del proceso attacheado.
+
+        Devuelve None si la consola rechazó la lectura (la región se omite en vez
+        de compararse contra ceros inventados, que producirían falsos matches).
+        Los OSError se propagan: significan que el socket ya no sirve y seguir
+        escaneando solo generaría resultados basura.
+        """
+        try:
+            return self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
+        except PS4DBGError as exc:
+            self._failed_reads += 1
+            self._failed_bytes += chunk_len
+            logger.warning("skipping %d bytes at 0x%X (pid=%d): %s",
+                           chunk_len, addr, self.pm.pid, exc)
+            return None
 
     # ------------------------------------------------------------------
     # Cancel
@@ -296,6 +335,8 @@ class ScanEngine:
             sections = sections or [s for s in self.pm.mapped_section_list if s.check]
             if not sections:
                 raise RuntimeError("no sections selected for scan (use section_check first)")
+            self._failed_reads = 0
+            self._failed_bytes = 0
 
             total_bytes = sum(s.length for s in sections)
             bytes_processed = 0
@@ -313,17 +354,15 @@ class ScanEngine:
 
                 while remaining > 0 and not self.is_cancelled:
                     chunk_len = min(self.peek_buffer_length, remaining)
-                    try:
-                        buffer = self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
-                    except Exception:
-                        buffer = b"\x00" * chunk_len
+                    buffer = self._read_chunk(addr, chunk_len)
 
-                    # Si no requiere parseo de valores, default_value_0 puede ser None
-                    # El comparador debe manejarlo
-                    d0 = value_0 if handler.parse_first_value else (b"" if value_0 is None else value_0)
-                    d1 = value_1 if handler.parse_second_value else (b"" if value_1 is None else value_1)
+                    if buffer is not None:
+                        # Si no requiere parseo de valores, default_value_0 puede ser None
+                        # El comparador debe manejarlo
+                        d0 = value_0 if handler.parse_first_value else (b"" if value_0 is None else value_0)
+                        d1 = value_1 if handler.parse_second_value else (b"" if value_1 is None else value_1)
 
-                    _new_scan_vectorized(handler, buffer, d0, d1, base_addr_offset, section.result_list)
+                        _new_scan_vectorized(handler, buffer, d0, d1, base_addr_offset, section.result_list)
 
                     addr += chunk_len
                     base_addr_offset += chunk_len
@@ -340,6 +379,8 @@ class ScanEngine:
                             percent=pct,
                             elapsed_seconds=time.time() - t0,
                             results_so_far=self.pm.mapped_section_list.total_result_count(),
+                            failed_reads=self._failed_reads,
+                            failed_bytes=self._failed_bytes,
                         ))
 
             if progress_cb:
@@ -351,6 +392,8 @@ class ScanEngine:
                     percent=100.0,
                     elapsed_seconds=time.time() - t0,
                     results_so_far=self.pm.mapped_section_list.total_result_count(),
+                    failed_reads=self._failed_reads,
+                    failed_bytes=self._failed_bytes,
                 ))
 
             return self.pm.mapped_section_list.total_result_count()
@@ -376,6 +419,8 @@ class ScanEngine:
             sections = sections or [s for s in self.pm.mapped_section_list if s.check and s.result_list is not None]
             if not sections:
                 raise RuntimeError("no sections with previous results to next-scan")
+            self._failed_reads = 0
+            self._failed_bytes = 0
 
             total_bytes = sum(s.length for s in sections)
             bytes_processed = 0
@@ -394,15 +439,13 @@ class ScanEngine:
 
                 while remaining > 0 and not self.is_cancelled:
                     chunk_len = min(self.peek_buffer_length, remaining)
-                    try:
-                        buffer = self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
-                    except Exception:
-                        buffer = b"\x00" * chunk_len
+                    buffer = self._read_chunk(addr, chunk_len)
 
-                    d0 = value_0 if handler.parse_first_value else (b"" if value_0 is None else value_0)
-                    d1 = value_1 if handler.parse_second_value else (b"" if value_1 is None else value_1)
+                    if buffer is not None:
+                        d0 = value_0 if handler.parse_first_value else (b"" if value_0 is None else value_0)
+                        d1 = value_1 if handler.parse_second_value else (b"" if value_1 is None else value_1)
 
-                    _next_scan_vectorized(handler, buffer, old_rl, new_rl, d0, d1, base_addr_offset)
+                        _next_scan_vectorized(handler, buffer, old_rl, new_rl, d0, d1, base_addr_offset)
 
                     addr += chunk_len
                     base_addr_offset += chunk_len
@@ -418,7 +461,9 @@ class ScanEngine:
                             bytes_total=total_bytes,
                             percent=pct,
                             elapsed_seconds=time.time() - t0,
-                            results_so_far=sum(s.result_list.count for s in sections if s.result_list) ,
+                            results_so_far=sum(s.result_list.count for s in sections if s.result_list),
+                            failed_reads=self._failed_reads,
+                            failed_bytes=self._failed_bytes,
                         ))
 
                 section.result_list = new_rl
@@ -432,6 +477,8 @@ class ScanEngine:
                     percent=100.0,
                     elapsed_seconds=time.time() - t0,
                     results_so_far=self.pm.mapped_section_list.total_result_count(),
+                    failed_reads=self._failed_reads,
+                    failed_bytes=self._failed_bytes,
                 ))
 
             return self.pm.mapped_section_list.total_result_count()
@@ -456,6 +503,8 @@ class ScanEngine:
             sections = sections or [s for s in self.pm.mapped_section_list if s.check]
             if not sections:
                 raise RuntimeError("no sections selected for pointer scan")
+            self._failed_reads = 0
+            self._failed_bytes = 0
 
             total_bytes = sum(s.length for s in sections)
             bytes_processed = 0
@@ -470,12 +519,10 @@ class ScanEngine:
 
                 while remaining > 0 and not self.is_cancelled:
                     chunk_len = min(self.peek_buffer_length, remaining)
-                    try:
-                        buffer = self.pool.get(0).read_memory(self.pm.pid, addr, chunk_len)
-                    except Exception:
-                        buffer = b"\x00" * chunk_len
+                    buffer = self._read_chunk(addr, chunk_len)
 
-                    _pointer_scan_buffer(self.pm, buffer, addr, pointer_list)
+                    if buffer is not None:
+                        _pointer_scan_buffer(self.pm, buffer, addr, pointer_list)
 
                     addr += chunk_len
                     remaining -= chunk_len
@@ -491,6 +538,8 @@ class ScanEngine:
                             percent=pct,
                             elapsed_seconds=time.time() - t0,
                             results_so_far=pointer_list.count,
+                            failed_reads=self._failed_reads,
+                            failed_bytes=self._failed_bytes,
                         ))
 
             if progress_cb:
@@ -502,6 +551,8 @@ class ScanEngine:
                     percent=100.0,
                     elapsed_seconds=time.time() - t0,
                     results_so_far=pointer_list.count,
+                    failed_reads=self._failed_reads,
+                    failed_bytes=self._failed_bytes,
                 ))
 
             return pointer_list.count

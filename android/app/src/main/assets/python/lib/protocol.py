@@ -227,8 +227,12 @@ def build_packet(cmd: int, payload: bytes = b"") -> bytes:
 def parse_status(data: bytes) -> CMD_STATUS:
     """Convierte 4 bytes en un CMD_STATUS."""
     if len(data) < 4:
-        raise ValueError("status buffer too short")
-    return CMD_STATUS(struct.unpack("<I", data[:4])[0])
+        raise ValueError(f"status buffer too short: {len(data)} < 4")
+    raw = struct.unpack("<I", data[:4])[0]
+    try:
+        return CMD_STATUS(raw)
+    except ValueError as exc:
+        raise ValueError(f"unknown ps4debug status 0x{raw:08X}") from exc
 
 
 def cstr(data: bytes, offset: int = 0, encoding: str = "ascii") -> str:

@@ -8,8 +8,10 @@ from __future__ import annotations
 import os
 import shlex
 import sys
+import traceback
 from typing import Optional
 
+import click
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
@@ -137,12 +139,19 @@ def run_repl(session):
             # usamos standalone_mode=False para que no haga sys.exit()
             try:
                 cli.main(args, prog_name="ps4cheater", standalone_mode=False)
-            except SystemExit:
-                pass
+            except SystemExit as e:
+                # Los comandos usan sys.exit(1) para señalar fallo; en el REPL no
+                # queremos salir, pero tampoco tragarnos el código de error.
+                code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+                if code:
+                    console.print(f"[red]El comando '{args[0]}' terminó con código {code}.[/red]")
             except click.exceptions.UsageError as e:
                 console.print(f"[yellow]Uso: {e.format_message()}[/yellow]")
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
+            except click.exceptions.ClickException as e:
+                console.print(f"[red]{e.format_message()}[/red]")
+            except Exception:
+                console.print(f"[red]Error inesperado ejecutando '{line}':[/red]")
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
         except KeyboardInterrupt:
             console.print("\n[dim](Ctrl+C — escribe 'exit' para salir)[/dim]")
@@ -155,7 +164,3 @@ def run_repl(session):
     if session.connected:
         session.disconnect()
         console.print("[green]Desconectado.[/green]")
-
-
-# Import click here to avoid circular import at top
-import click

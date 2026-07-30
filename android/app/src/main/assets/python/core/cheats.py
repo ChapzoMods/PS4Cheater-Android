@@ -14,18 +14,27 @@ una versión más práctica para CLI:
 from __future__ import annotations
 
 import json
+import logging
 import struct
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Callable, List, Optional
 
-from lib import PS4DBG
+from lib import PS4DBG, PS4DBGError, PS4DBGNotConnected
 from .types import (
     ValueType, CompareType,
     MemoryTypeHandler, make_handler,
     VALUE_TYPE_TO_STR, lookup_value_type,
 )
+
+logger = logging.getLogger(__name__)
+
+# Errores esperables al escribir/leer memoria de la consola:
+#   - PS4DBG*: la consola rechazó la operación o no hay conexión
+#   - OSError: el socket falló
+#   - ValueError/struct.error: el valor del cheat no encaja en su tipo
+MEMORY_OP_ERRORS = (PS4DBGError, PS4DBGNotConnected, OSError, ValueError, struct.error)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +86,7 @@ class CheatList:
         self._freeze_stop = threading.Event()
         self._freeze_interval: float = 0.1  # 100 ms
         self._lock = threading.RLock()
+        self._last_error: Optional[BaseException] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -86,6 +96,11 @@ class CheatList:
     def entries(self) -> List[CheatEntry]:
         with self._lock:
             return list(self._entries)
+
+    @property
+    def last_error(self) -> Optional[BaseException]:
+        """Última excepción capturada por apply()/read_current() (None si no hubo)."""
+        return self._last_error
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -162,14 +177,24 @@ class CheatList:
     # ------------------------------------------------------------------
 
     def apply(self, entry: CheatEntry) -> bool:
-        """Escribe el valor del cheat en memoria."""
+        """
+        Escribe el valor del cheat en memoria.
+
+        Devuelve False si no se pudo aplicar; el motivo queda registrado vía
+        logging y accesible en `last_error`.
+        """
         if self.ps4 is None or not self.ps4.is_connected:
+            self._last_error = PS4DBGNotConnected("not connected")
+            logger.warning("cheat #%d not applied: no active connection", entry.id)
             return False
         try:
             data = entry.to_bytes()
             self.ps4.write_memory(self.pid, entry.address, data)
+            self._last_error = None
             return True
-        except Exception:
+        except MEMORY_OP_ERRORS as exc:
+            self._last_error = exc
+            logger.warning("cheat #%d (0x%X) not applied: %s", entry.id, entry.address, exc)
             return False
 
     def apply_all(self) -> int:
@@ -189,14 +214,23 @@ class CheatList:
         return n
 
     def read_current(self, entry: CheatEntry) -> Optional[str]:
-        """Lee el valor actual de la memoria y lo devuelve formateado."""
+        """
+        Lee el valor actual de la memoria y lo devuelve formateado.
+
+        Devuelve None si la lectura falló; el motivo queda en `last_error`.
+        """
         if self.ps4 is None or not self.ps4.is_connected:
+            self._last_error = PS4DBGNotConnected("not connected")
+            logger.warning("cheat #%d not read: no active connection", entry.id)
             return None
         try:
             h = entry.to_handler()
             data = self.ps4.read_memory(self.pid, entry.address, h.length)
+            self._last_error = None
             return entry.from_bytes(data)
-        except Exception:
+        except MEMORY_OP_ERRORS as exc:
+            self._last_error = exc
+            logger.warning("cheat #%d (0x%X) not read: %s", entry.id, entry.address, exc)
             return None
 
     # ------------------------------------------------------------------
@@ -225,8 +259,13 @@ class CheatList:
         while not self._freeze_stop.is_set():
             try:
                 self.apply_frozen()
+            except MEMORY_OP_ERRORS as exc:
+                # El loop sigue vivo (la consola puede volver), pero el fallo se reporta.
+                self._last_error = exc
+                logger.warning("freeze loop iteration failed: %s", exc)
             except Exception:
-                pass
+                logger.exception("freeze loop stopped by an unexpected error")
+                raise
             self._freeze_stop.wait(self._freeze_interval)
 
     @property
@@ -265,7 +304,11 @@ class CheatList:
                 try:
                     vt = ValueType[ed["value_type_name"]]
                 except KeyError:
-                    pass
+                    logger.warning("unknown value_type_name %r, falling back to %s",
+                                   ed["value_type_name"], vt.name)
+            missing = [k for k in ("id", "address", "value") if k not in ed]
+            if missing:
+                raise ValueError(f"cheat entry is missing required field(s): {', '.join(missing)}")
             entry = CheatEntry(
                 id=ed["id"],
                 address=ed["address"],
@@ -352,6 +395,8 @@ class CheatList:
             try:
                 addr = int(addr_el.text, 16) if addr_el is not None and addr_el.text else 0
             except ValueError:
+                logger.warning("skipping cheat entry %r: address %r is not hex",
+                               desc, addr_el.text)
                 continue
             frozen = active_el is not None and active_el.text == "1"
             cl.add(address=addr, value_type=vt, value="0", description=desc, frozen=frozen)

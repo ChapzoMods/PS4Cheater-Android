@@ -31,6 +31,7 @@ import json
 import os
 import sys
 import struct
+import xml.etree.ElementTree as ET
 
 # Add project root to sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -101,10 +102,12 @@ class Session:
         try:
             with open(SESSION_FILE, "w") as f:
                 json.dump(data, f)
-        except OSError:
-            pass
+        except OSError as e:
+            console.print(f"[yellow]⚠ No se pudo guardar la sesión en {SESSION_FILE}: {e}[/yellow]")
 
     def load(self):
+        if not os.path.exists(SESSION_FILE):
+            return
         try:
             with open(SESSION_FILE) as f:
                 data = json.load(f)
@@ -114,8 +117,9 @@ class Session:
             self.proc_name = data.get("proc_name", "")
             self.cheats_path = data.get("cheats_path", "")
             self.section_checks = data.get("section_checks", [])
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, json.JSONDecodeError) as e:
+            console.print(f"[yellow]⚠ Sesión en {SESSION_FILE} ilegible ({e}); "
+                          f"empezando sin estado previo.[/yellow]")
 
     def sync_section_checks_to_pm(self):
         """Aplica self.section_checks al ProcessManager (después de cargar sections)."""
@@ -134,11 +138,14 @@ class Session:
         self.port = port
         self.ps4 = PS4DBG(ip, port, timeout=30.0)
         if not self.ps4.connect():
-            console.print(f"[red]❌ No se pudo conectar a {ip}:{port}[/red]")
+            console.print(f"[red]❌ No se pudo conectar a {ip}:{port}: "
+                          f"{self.ps4.last_error}[/red]")
             return False
         # Pool de 3 conexiones para paralelismo
         self.pool = PS4DBGPool(ip, port, size=3, timeout=30.0)
-        self.pool.connect_all()
+        if not self.pool.connect_all():
+            console.print(f"[yellow]⚠ No se pudo abrir el pool de conexiones a {ip}:{port}; "
+                          f"el escaneo usará la conexión principal.[/yellow]")
         self.connected = True
         self.scan_engine = ScanEngine(self.pool, self.pm, num_comparers=2)
         self.cheats.ps4 = self.ps4
@@ -202,26 +209,40 @@ class Session:
         try:
             with open(SCAN_STATE_FILE) as f:
                 data = json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as e:
+            console.print(f"[yellow]⚠ Scan state en {SCAN_STATE_FILE} ilegible: {e}[/yellow]")
             return False
-        vt = ValueType(data["value_type"])
-        ct = CompareType(data["compare_type"])
-        self.handler = make_handler(vt, ct,
-                                     is_aligned=(data["alignment"] != 1),
-                                     type_length=data["length"])
+        try:
+            vt = ValueType(data["value_type"])
+            ct = CompareType(data["compare_type"])
+            self.handler = make_handler(vt, ct,
+                                        is_aligned=(data["alignment"] != 1),
+                                        type_length=data["length"])
+        except (KeyError, ValueError) as e:
+            console.print(f"[yellow]⚠ Scan state en {SCAN_STATE_FILE} inválido: {e}[/yellow]")
+            return False
         # Re-poblar ResultList en las secciones
+        skipped = 0
         for r in data.get("results", []):
-            section = self.pm.mapped_section_list.get_mapped_section(r["address"])
+            try:
+                address = r["address"]
+                value = bytes.fromhex(r["value_hex"])
+            except (KeyError, TypeError, ValueError):
+                skipped += 1
+                continue
+            section = self.pm.mapped_section_list.get_mapped_section(address)
             if section is None:
+                skipped += 1
                 continue
             if section.result_list is None:
                 section.result_list = ResultList(self.handler.length, self.handler.alignment)
-            addr_off = r["address"] - section.start
-            value = bytes.fromhex(r["value_hex"])
             try:
-                section.result_list.add(addr_off, value)
+                section.result_list.add(address - section.start, value)
             except ValueError:
-                pass
+                skipped += 1
+        if skipped:
+            console.print(f"[yellow]⚠ {skipped} resultado(s) del scan previo descartados "
+                          f"(no encajan con las secciones actuales).[/yellow]")
         return True
 
     def clear_scan_state(self):
@@ -229,8 +250,8 @@ class Session:
         try:
             if os.path.exists(SCAN_STATE_FILE):
                 os.unlink(SCAN_STATE_FILE)
-        except OSError:
-            pass
+        except OSError as e:
+            console.print(f"[yellow]⚠ No se pudo borrar {SCAN_STATE_FILE}: {e}[/yellow]")
 
     # ------------------------------------------------------------------
     # Persistencia de cheats
@@ -253,8 +274,8 @@ class Session:
             new_cl.ps4 = self.cheats.ps4
             new_cl.pid = self.pid
             self.cheats = new_cl
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            console.print(f"[yellow]⚠ No se pudieron cargar los cheats de {CHEATS_FILE}: {e}[/yellow]")
 
 
 session = Session()
@@ -298,8 +319,9 @@ def require_attached():
             session.sync_section_checks_to_pm()
             # Cargar scan state previo si existe
             session.load_scan_state()
-        except (PS4DBGError, OSError):
-            pass
+        except (PS4DBGError, OSError) as e:
+            console.print(f"[yellow]⚠ No se pudieron recargar las secciones de "
+                          f"pid={session.pid}: {e}[/yellow]")
 
 
 def parse_address(s: str) -> int:
@@ -340,6 +362,14 @@ def hexdump(data: bytes, base_addr: int = 0, bytes_per_line: int = 16) -> str:
         ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
         lines.append(f"{addr:016X}  {hex_part}  |{ascii_part}|")
     return "\n".join(lines)
+
+
+def _warn_failed_reads(engine: ScanEngine) -> None:
+    """Avisa si la consola rechazó lecturas durante el escaneo (regiones omitidas)."""
+    if engine.failed_reads:
+        console.print(f"[yellow]⚠ {engine.failed_reads} bloque(s) "
+                      f"({engine.failed_bytes // 1024} KB) no se pudieron leer y se omitieron; "
+                      f"los resultados pueden estar incompletos.[/yellow]")
 
 
 def format_value(value: bytes, value_type: ValueType) -> str:
@@ -565,8 +595,12 @@ def new(value_type_str, compare_type_str, value1, value2, hex_fmt, length, unali
     handler = make_handler(vt, ct, is_aligned=not unaligned, type_length=length)
     session.handler = handler
     # Parsea valores
-    v0 = handler.parse_value(value1, hex_fmt) if handler.parse_first_value else b""
-    v1 = handler.parse_value(value2, hex_fmt) if (handler.parse_second_value and value2) else b""
+    try:
+        v0 = handler.parse_value(value1, hex_fmt) if handler.parse_first_value else b""
+        v1 = handler.parse_value(value2, hex_fmt) if (handler.parse_second_value and value2) else b""
+    except (ValueError, struct.error) as e:
+        console.print(f"[red]❌ Valor inválido para tipo {value_type_str}: {e}[/red]")
+        sys.exit(1)
     if handler.parse_first_value and not v0:
         console.print(f"[red]❌ No se pudo parsear valor 1: {value1}[/red]")
         sys.exit(1)
@@ -605,6 +639,7 @@ def new(value_type_str, compare_type_str, value1, value2, hex_fmt, length, unali
             sys.exit(1)
     # Persistir scan state
     session.save_scan_state()
+    _warn_failed_reads(session.scan_engine)
     console.print(f"[green]✓ Scan completado: {count} resultado(s).[/green]")
     console.print(f"[dim]Mostrar con: ps4cheater scan results[/dim]")
 
@@ -632,8 +667,12 @@ def next(compare_type_str, value1, value2, hex_fmt):
                            is_aligned=(session.handler.alignment != 1),
                            type_length=session.handler.length)
     session.handler = handler
-    v0 = handler.parse_value(value1, hex_fmt) if (handler.parse_first_value and value1) else b""
-    v1 = handler.parse_value(value2, hex_fmt) if (handler.parse_second_value and value2) else b""
+    try:
+        v0 = handler.parse_value(value1, hex_fmt) if (handler.parse_first_value and value1) else b""
+        v1 = handler.parse_value(value2, hex_fmt) if (handler.parse_second_value and value2) else b""
+    except (ValueError, struct.error) as e:
+        console.print(f"[red]❌ Valor inválido: {e}[/red]")
+        sys.exit(1)
 
     with Progress(
         SpinnerColumn(),
@@ -652,6 +691,7 @@ def next(compare_type_str, value1, value2, hex_fmt):
             console.print(f"[red]❌ Error en next-scan: {e}[/red]")
             sys.exit(1)
     session.save_scan_state()
+    _warn_failed_reads(session.scan_engine)
     console.print(f"[green]✓ Next-scan completado: {count} resultado(s).[/green]")
 
 
@@ -683,8 +723,8 @@ def results(limit, refresh):
             try:
                 data = session.ps4.read_memory(session.pid, addr, session.handler.length)
                 row.append(format_value(data, session.handler.value_type))
-            except Exception:
-                row.append("—")
+            except (PS4DBGError, OSError) as e:
+                row.append(f"[red]error: {e}[/red]")
         table.add_row(*row)
     console.print(table)
 
@@ -761,7 +801,8 @@ def add(address, value_type_str, value, freeze, hex_value, description):
     if session.cheats.apply(e):
         console.print(f"[green]✓ Cheat #{e.id} añadido y aplicado en 0x{addr:016X}[/green]")
     else:
-        console.print(f"[green]✓ Cheat #{e.id} añadido (no se pudo aplicar)[/green]")
+        console.print(f"[yellow]⚠ Cheat #{e.id} añadido pero no se pudo aplicar: "
+                      f"{session.cheats.last_error}[/yellow]")
     if freeze and not session.cheats.freeze_running:
         session.cheats.start_freeze_loop()
         console.print("[cyan]→ Freeze loop iniciado.[/cyan]")
@@ -834,7 +875,9 @@ def apply(entry_id):
     if session.cheats.apply(e):
         console.print(f"[green]✓ Cheat #{entry_id} aplicado en 0x{e.address:016X}[/green]")
     else:
-        console.print(f"[red]❌ No se pudo aplicar cheat #{entry_id}[/red]")
+        console.print(f"[red]❌ No se pudo aplicar cheat #{entry_id}: "
+                      f"{session.cheats.last_error}[/red]")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -872,6 +915,7 @@ def scan(target_address, depth, max_range):
         def on_progress(p: ScanProgress):
             progress.update(task, completed=p.percent)
         session.scan_engine.pointer_scan(pl, progress_cb=on_progress)
+    _warn_failed_reads(session.scan_engine)
     console.print(f"[green]✓ {pl.count} punteros encontrados.[/green]")
     # 2. DFS para encontrar caminos a addr
     pl.init()
@@ -939,8 +983,9 @@ def import_(path, fmt, merge):
                 )
         session.cheats.pid = session.pid
         console.print(f"[green]✓ {len(new_cl)} cheats importados desde {path}[/green]")
-    except (OSError, json.JSONDecodeError) as e:
-        console.print(f"[red]❌ {e}[/red]")
+    except (OSError, json.JSONDecodeError, ET.ParseError, ValueError, KeyError) as e:
+        console.print(f"[red]❌ No se pudo importar {path}: {e}[/red]")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -952,13 +997,17 @@ def repl():
     """Modo interactivo con autocompletado."""
     try:
         from .repl import run_repl
-        run_repl(session)
-    except ImportError:
-        console.print("[yellow]prompt_toolkit no instalado. Instalando…[/yellow]")
+    except ImportError as e:
+        console.print(f"[yellow]prompt_toolkit no instalado ({e}). Instalando…[/yellow]")
         import subprocess
-        subprocess.run([sys.executable, "-m", "pip", "install", "prompt_toolkit"], check=True)
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "prompt_toolkit"], check=True)
+        except (subprocess.CalledProcessError, OSError) as pip_err:
+            console.print(f"[red]❌ No se pudo instalar prompt_toolkit: {pip_err}\n"
+                          f"Instálalo a mano con: pip install prompt_toolkit[/red]")
+            sys.exit(1)
         from .repl import run_repl
-        run_repl(session)
+    run_repl(session)
 
 
 # ---------------------------------------------------------------------------
