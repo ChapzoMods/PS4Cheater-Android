@@ -62,6 +62,12 @@ class PS4DBG:
     DEFAULT_TIMEOUT: float = 30.0  # segundos
     CONNECT_TIMEOUT: float = 10.0
 
+    # Límites de cordura para longitudes/conteos anunciados por el otro extremo.
+    # Evitan que un endpoint malicioso o mal comportado provoque una asignación
+    # de memoria enorme (DoS) al declarar un tamaño absurdo.
+    MAX_RESPONSE_BYTES: int = 256 * 1024 * 1024  # 256 MB
+    MAX_ENTRY_COUNT: int = 10_000_000
+
     def __init__(self, ip: str, port: int = PS4DBG_PORT, timeout: float = DEFAULT_TIMEOUT):
         self.ip = ip
         self.port = port
@@ -171,6 +177,20 @@ class PS4DBG:
         if payload:
             self._send_all(payload)
 
+    def _recv_count(self) -> int:
+        """Lee un int32 de conteo de entradas y valida que sea razonable."""
+        count = struct.unpack("<i", self._recv_exact(4))[0]
+        if count < 0 or count > self.MAX_ENTRY_COUNT:
+            raise PS4DBGError(CMD_STATUS.CMD_TOO_MUCH_DATA, f"count fuera de rango: {count}")
+        return count
+
+    def _recv_length(self) -> int:
+        """Lee un int32 de longitud de payload y valida que sea razonable."""
+        length = struct.unpack("<i", self._recv_exact(4))[0]
+        if length < 0 or length > self.MAX_RESPONSE_BYTES:
+            raise PS4DBGError(CMD_STATUS.CMD_TOO_MUCH_DATA, f"length fuera de rango: {length}")
+        return length
+
     def _recv_status(self) -> CMD_STATUS:
         data = self._recv_exact(4)
         return P.parse_status(data)
@@ -194,8 +214,7 @@ class PS4DBG:
         with self._lock:
             self._send_cmd_packet(CMD.CMD_VERSION, b"")
             # Recibe length int32 + data
-            length_bytes = self._recv_exact(4)
-            length = struct.unpack("<i", length_bytes)[0]
+            length = self._recv_length()
             data = self._recv_exact(length)
             self._version = P.cstr(data, 0)
             return self._version
@@ -205,8 +224,7 @@ class PS4DBG:
         with self._lock:
             self._send_cmd_packet(CMD.CMD_PROC_LIST, b"")
             self._check_status("CMD_PROC_LIST")
-            count_bytes = self._recv_exact(4)
-            count = struct.unpack("<i", count_bytes)[0]
+            count = self._recv_count()
             data = self._recv_exact(count * P.PROC_LIST_ENTRY_SIZE)
             return P.parse_process_list(data)
 
@@ -225,8 +243,7 @@ class PS4DBG:
             payload = P.payload_proc_maps(pid)
             self._send_cmd_packet(CMD.CMD_PROC_MAPS, payload)
             self._check_status(f"CMD_PROC_MAPS pid={pid}")
-            count_bytes = self._recv_exact(4)
-            count = struct.unpack("<i", count_bytes)[0]
+            count = self._recv_count()
             data = self._recv_exact(count * P.PROC_MAP_ENTRY_SIZE)
             entries = P.parse_process_maps(data)
             return ProcessMap(pid=pid, entries=entries)

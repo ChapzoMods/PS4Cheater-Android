@@ -170,3 +170,42 @@ class TestErrorHandling:
     def test_invalid_pid_process_maps(self, ps4_client):
         with pytest.raises(PS4DBGError):
             ps4_client.get_process_maps(9999)
+
+
+class _FakeSock:
+    """Socket falso que entrega bytes predefinidos, para simular un peer hostil."""
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def recv(self, n):
+        chunk, self._data = self._data[:n], self._data[n:]
+        return chunk
+
+
+class TestLengthBounds:
+    """Un endpoint malicioso no debe poder forzar asignaciones gigantes (DoS)."""
+
+    def _client_with(self, data: bytes) -> PS4DBG:
+        c = PS4DBG("127.0.0.1", 744)
+        c._sock = _FakeSock(data)
+        c._connected = True
+        return c
+
+    def test_recv_count_rejects_huge(self):
+        c = self._client_with(struct.pack("<i", PS4DBG.MAX_ENTRY_COUNT + 1))
+        with pytest.raises(PS4DBGError):
+            c._recv_count()
+
+    def test_recv_count_rejects_negative(self):
+        c = self._client_with(struct.pack("<i", -1))
+        with pytest.raises(PS4DBGError):
+            c._recv_count()
+
+    def test_recv_length_rejects_huge(self):
+        c = self._client_with(struct.pack("<i", PS4DBG.MAX_RESPONSE_BYTES + 1))
+        with pytest.raises(PS4DBGError):
+            c._recv_length()
+
+    def test_recv_count_accepts_reasonable(self):
+        c = self._client_with(struct.pack("<i", 3))
+        assert c._recv_count() == 3

@@ -9,6 +9,10 @@ prompt_toolkit>=3.0
 # Rendimiento (opcional pero recomendado para escaneo vectorial)
 numpy>=1.20
 
+# Seguridad: parseo XML endurecido para importar .CT no confiables.
+# Opcional — si no está instalado se usa un fallback seguro con expat.
+defusedxml>=0.7
+
 # App web Opción C (opcional, solo si se usa android/option_c_webview/)
 flask>=2.0
 
