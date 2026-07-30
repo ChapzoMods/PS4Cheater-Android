@@ -91,6 +91,10 @@ ps4cheater-android/
 └── .github/workflows/build.yml  # CI
 ```
 
+Los scripts de Python existen **una sola vez** en `lib/`, `core/` y `cli/`: la task
+Gradle `syncPythonAssets` los copia a los assets del APK durante el build, así que
+no hay que mantener una copia dentro de `android/app/src/main/assets/`.
+
 ## Testing
 
 ```bash

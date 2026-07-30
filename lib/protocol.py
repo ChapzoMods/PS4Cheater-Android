@@ -17,7 +17,9 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum, IntFlag
-from typing import List, Optional
+from typing import Callable, List, Optional, TypeVar
+
+T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
@@ -162,18 +164,17 @@ class ProcessInfo:
     contentid: str = ""
 
 
-@dataclass
-class MemoryEntry:
-    """Entrada del mapa de memoria de un proceso (CMD_PROC_MAPS)."""
-    name: str = ""
-    start: int = 0
-    end: int = 0
-    offset: int = 0
-    prot: int = 0
+def format_protection(prot: int) -> str:
+    """Formatea un bitmask de protección como 'rwx' (con '-' por bit ausente)."""
+    return ("r" if prot & VMProtection.VM_PROT_READ else "-") + \
+           ("w" if prot & VMProtection.VM_PROT_WRITE else "-") + \
+           ("x" if prot & VMProtection.VM_PROT_EXECUTE else "-")
 
-    @property
-    def length(self) -> int:
-        return self.end - self.start
+
+class MemoryProtectionMixin:
+    """Accesores de protección para cualquier región con un campo `prot`."""
+
+    prot: int
 
     @property
     def readable(self) -> bool:
@@ -187,10 +188,32 @@ class MemoryEntry:
     def executable(self) -> bool:
         return bool(self.prot & VMProtection.VM_PROT_EXECUTE)
 
+    @property
+    def prot_string(self) -> str:
+        return format_protection(self.prot)
+
+
+def format_region(name: str, prot: int, start: int, end: int, name_width: int) -> str:
+    """Representación textual común de una región de memoria."""
+    return (f"{name:{name_width}s} {format_protection(prot)} "
+            f"0x{start:016X}-0x{end:016X} ({(end - start) // 1024} KB)")
+
+
+@dataclass
+class MemoryEntry(MemoryProtectionMixin):
+    """Entrada del mapa de memoria de un proceso (CMD_PROC_MAPS)."""
+    name: str = ""
+    start: int = 0
+    end: int = 0
+    offset: int = 0
+    prot: int = 0
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
     def __str__(self) -> str:
-        prot_str = ("r" if self.readable else "-") + ("w" if self.writable else "-") + ("x" if self.executable else "-")
-        return (f"{self.name:32s} {prot_str} "
-                f"0x{self.start:016X}-0x{self.end:016X} ({self.length // 1024} KB)")
+        return format_region(self.name, self.prot, self.start, self.end, name_width=32)
 
 
 @dataclass
@@ -242,19 +265,29 @@ def cstr(data: bytes, offset: int = 0, encoding: str = "ascii") -> str:
     return data[offset:end].decode(encoding, errors="replace")
 
 
+def parse_records(data: bytes, entry_size: int, parse_entry: Callable[[bytes], T]) -> List[T]:
+    """Parsea `data` como una secuencia de registros de `entry_size` bytes."""
+    return [
+        parse_entry(data[off:off + entry_size])
+        for off in range(0, (len(data) // entry_size) * entry_size, entry_size)
+    ]
+
+
+def _parse_process_entry(entry: bytes) -> Process:
+    return Process(name=cstr(entry), pid=struct.unpack("<i", entry[32:36])[0])
+
+
+def _parse_map_entry(entry: bytes) -> MemoryEntry:
+    start, end, offset, prot = struct.unpack("<QQQH", entry[32:58])
+    return MemoryEntry(name=cstr(entry), start=start, end=end, offset=offset, prot=prot)
+
+
 def parse_process_list(data: bytes) -> List[Process]:
     """
     Parsea el payload de CMD_PROC_LIST: N * 36 bytes.
     Cada 36 bytes: name[32] + pid int32.
     """
-    out: List[Process] = []
-    n = len(data) // PROC_LIST_ENTRY_SIZE
-    for i in range(n):
-        off = i * PROC_LIST_ENTRY_SIZE
-        name = cstr(data, off)
-        pid = struct.unpack("<i", data[off + 32:off + 36])[0]
-        out.append(Process(name=name, pid=pid))
-    return out
+    return parse_records(data, PROC_LIST_ENTRY_SIZE, _parse_process_entry)
 
 
 def parse_process_info(data: bytes) -> ProcessInfo:
@@ -274,50 +307,33 @@ def parse_process_maps(data: bytes) -> List[MemoryEntry]:
     Parsea el payload de CMD_PROC_MAPS: N * 58 bytes.
     Cada 58 bytes: name[32] + start uint64 + end uint64 + offset uint64 + prot uint16.
     """
-    out: List[MemoryEntry] = []
-    n = len(data) // PROC_MAP_ENTRY_SIZE
-    for i in range(n):
-        off = i * PROC_MAP_ENTRY_SIZE
-        name = cstr(data, off)
-        start = struct.unpack("<Q", data[off + 32:off + 40])[0]
-        end = struct.unpack("<Q", data[off + 40:off + 48])[0]
-        offset = struct.unpack("<Q", data[off + 48:off + 56])[0]
-        prot = struct.unpack("<H", data[off + 56:off + 58])[0]
-        out.append(MemoryEntry(name=name, start=start, end=end, offset=offset, prot=prot))
-    return out
+    return parse_records(data, PROC_MAP_ENTRY_SIZE, _parse_map_entry)
 
 
 # ---------------------------------------------------------------------------
 # Payload builders
 # ---------------------------------------------------------------------------
 
-def payload_proc_read(pid: int, address: int, length: int) -> bytes:
+def payload_pid(pid: int) -> bytes:
+    """Payload de los comandos que solo llevan el pid: 4 bytes."""
+    return struct.pack("<i", pid)
+
+
+def payload_pid_address_length(pid: int, address: int, length: int) -> bytes:
     """
-    Payload de CMD_PROC_READ: 16 bytes.
+    Payload de CMD_PROC_READ / CMD_PROC_WRITE: 16 bytes.
     C# usa: BitConverter.GetBytes(pid) [4] + BitConverter.GetBytes(address) [8] + BitConverter.GetBytes(length) [4]
     Nota: NO hay padding, va pegado (4 + 8 + 4 = 16).
     """
     return struct.pack("<IQI", pid, address, length)
 
 
-def payload_proc_write(pid: int, address: int, length: int) -> bytes:
-    """Payload de CMD_PROC_WRITE: 16 bytes (igual que read)."""
-    return struct.pack("<IQI", pid, address, length)
-
-
-def payload_proc_info(pid: int) -> bytes:
-    """Payload de CMD_PROC_INFO: 4 bytes (pid)."""
-    return struct.pack("<i", pid)
-
-
-def payload_proc_maps(pid: int) -> bytes:
-    """Payload de CMD_PROC_MAPS: 4 bytes (pid)."""
-    return struct.pack("<i", pid)
-
-
-def payload_proc_install(pid: int) -> bytes:
-    """Payload de CMD_PROC_INTALL: 4 bytes (pid)."""
-    return struct.pack("<i", pid)
+# Alias por comando (mismo wire format, nombres del protocolo)
+payload_proc_read = payload_pid_address_length
+payload_proc_write = payload_pid_address_length
+payload_proc_info = payload_pid
+payload_proc_maps = payload_pid
+payload_proc_install = payload_pid
 
 
 def payload_proc_alloc(pid: int, length: int) -> bytes:

@@ -189,46 +189,46 @@ class PointerList:
 # Python 3.10+ tiene bisect con key=; para versiones anteriores, helpers manuales.
 # ---------------------------------------------------------------------------
 
-def _bisect_addr(lst: List[Pointer], address: int) -> int:
-    """bisect_left sobre lista ordenada por .address."""
+def _bisect(lst: List[Pointer], target: int, key: Callable[[Pointer], int],
+            right: bool = False) -> int:
+    """
+    bisect_left/bisect_right sobre `lst` usando `key` para extraer el valor
+    ordenado de cada Pointer.
+    """
     lo, hi = 0, len(lst)
     while lo < hi:
         mid = (lo + hi) // 2
-        if lst[mid].address < address:
+        before = key(lst[mid]) <= target if right else key(lst[mid]) < target
+        if before:
             lo = mid + 1
         else:
             hi = mid
     return lo
+
+
+def _by_address(p: Pointer) -> int:
+    return p.address
+
+
+def _by_value(p: Pointer) -> int:
+    return p.pointer_value
+
+
+def _bisect_addr(lst: List[Pointer], address: int) -> int:
+    """bisect_left sobre lista ordenada por .address."""
+    return _bisect(lst, address, _by_address)
+
 
 def _bisect_addr_right(lst: List[Pointer], address: int) -> int:
     """bisect_right sobre lista ordenada por .address."""
-    lo, hi = 0, len(lst)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if lst[mid].address <= address:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
+    return _bisect(lst, address, _by_address, right=True)
+
 
 def _bisect_value(lst: List[Pointer], value: int) -> int:
-    """bisect_left sobre lista ordenada por .pointer_value (con .address como tiebreaker)."""
-    lo, hi = 0, len(lst)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if lst[mid].pointer_value < value:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
+    """bisect_left sobre lista ordenada por .pointer_value."""
+    return _bisect(lst, value, _by_value)
+
 
 def _bisect_value_right(lst: List[Pointer], value: int) -> int:
-    """bisect_right sobre lista ordenada por .pointer_value (con .address como tiebreaker)."""
-    lo, hi = 0, len(lst)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if lst[mid].pointer_value <= value:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
+    """bisect_right sobre lista ordenada por .pointer_value."""
+    return _bisect(lst, value, _by_value, right=True)

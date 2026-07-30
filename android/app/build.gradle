@@ -3,6 +3,24 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Los scripts Python viven una sola vez en la raíz del repo (lib/, core/, cli/).
+// Se copian a los assets del APK en tiempo de build para no duplicar el árbol
+// completo dentro de android/app/src/main/assets.
+ext.pythonSourceRoot = file("$rootDir/..")
+ext.pythonAssetsDir = file("$buildDir/generated/pythonAssets")
+ext.pythonAssetDirs = ['lib', 'core', 'cli']
+
+def syncPythonAssets = tasks.register('syncPythonAssets', Sync) {
+    description = 'Copia lib/, core/ y cli/ del repo a los assets del APK.'
+    into new File(pythonAssetsDir, 'python')
+    pythonAssetDirs.each { dir ->
+        from(new File(pythonSourceRoot, dir)) {
+            into dir
+            include '**/*.py'
+        }
+    }
+}
+
 android {
     namespace = "com.ps4cheater"
     compileSdk = 34
@@ -28,11 +46,19 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
+    sourceSets {
+        main { assets.srcDirs += pythonAssetsDir }
+    }
+
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.3" }
     packaging {
         resources { excludes += ['/META-INF/{AL2.0,LGPL2.1}'] }
     }
+}
+
+tasks.withType(com.android.build.gradle.tasks.MergeSourceSetFolders).configureEach {
+    dependsOn syncPythonAssets
 }
 
 dependencies {

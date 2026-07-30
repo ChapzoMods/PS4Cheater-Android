@@ -21,11 +21,27 @@ from dataclasses import asdict, dataclass, field
 from typing import Callable, List, Optional
 
 from lib import PS4DBG
-from .types import (
-    ValueType, CompareType,
-    MemoryTypeHandler, make_handler,
-    VALUE_TYPE_TO_STR, lookup_value_type,
-)
+from .types import ValueType, CompareType, MemoryTypeHandler, make_handler
+
+
+# ---------------------------------------------------------------------------
+# Mapeo con los VariableType de Cheat Engine (.CT)
+# ---------------------------------------------------------------------------
+
+CT_VARIABLE_TYPE_BY_VALUE_TYPE: dict[ValueType, str] = {
+    ValueType.BYTE_TYPE:   "0",
+    ValueType.USHORT_TYPE: "1",
+    ValueType.UINT_TYPE:   "2",
+    ValueType.ULONG_TYPE:  "3",
+    ValueType.FLOAT_TYPE:  "4",
+    ValueType.DOUBLE_TYPE: "5",
+    ValueType.STRING_TYPE: "6",
+    ValueType.HEX_TYPE:    "7",
+}
+
+CT_VALUE_TYPE_BY_VARIABLE_TYPE: dict[str, ValueType] = {
+    ct_type: value_type for value_type, ct_type in CT_VARIABLE_TYPE_BY_VALUE_TYPE.items()
+}
 
 
 # ---------------------------------------------------------------------------
@@ -47,16 +63,10 @@ class CheatEntry:
         return make_handler(self.value_type, CompareType.EXACT_VALUE, is_aligned=True)
 
     def to_bytes(self) -> bytes:
-        h = self.to_handler()
-        if self.hex_value and h.hex_string_to_bytes is not None:
-            return h.hex_string_to_bytes(self.value)
-        return h.string_to_bytes(self.value)
+        return self.to_handler().parse_value(self.value, is_hex=self.hex_value)
 
     def from_bytes(self, data: bytes) -> str:
-        h = self.to_handler()
-        if self.hex_value and h.bytes_to_hex_string is not None:
-            return h.bytes_to_hex_string(data)
-        return h.bytes_to_string(data)
+        return self.to_handler().format_value(data, hex_fmt=self.hex_value)
 
 
 # ---------------------------------------------------------------------------
@@ -128,29 +138,24 @@ class CheatList:
                     return e
             return None
 
-    def set_frozen(self, entry_id: int, frozen: bool) -> bool:
+    def update(self, entry_id: int, **fields) -> bool:
+        """Actualiza campos de una entrada. Devuelve False si el id no existe."""
         with self._lock:
             e = self.get(entry_id)
             if e is None:
                 return False
-            e.frozen = frozen
+            for name, value in fields.items():
+                setattr(e, name, value)
             return True
+
+    def set_frozen(self, entry_id: int, frozen: bool) -> bool:
+        return self.update(entry_id, frozen=frozen)
 
     def set_value(self, entry_id: int, value: str) -> bool:
-        with self._lock:
-            e = self.get(entry_id)
-            if e is None:
-                return False
-            e.value = value
-            return True
+        return self.update(entry_id, value=value)
 
     def set_address(self, entry_id: int, address: int) -> bool:
-        with self._lock:
-            e = self.get(entry_id)
-            if e is None:
-                return False
-            e.address = address
-            return True
+        return self.update(entry_id, address=address)
 
     def clear(self) -> None:
         with self._lock:
@@ -161,9 +166,13 @@ class CheatList:
     # Apply / read
     # ------------------------------------------------------------------
 
+    @property
+    def _writable(self) -> bool:
+        return self.ps4 is not None and self.ps4.is_connected
+
     def apply(self, entry: CheatEntry) -> bool:
         """Escribe el valor del cheat en memoria."""
-        if self.ps4 is None or not self.ps4.is_connected:
+        if not self._writable:
             return False
         try:
             data = entry.to_bytes()
@@ -174,23 +183,15 @@ class CheatList:
 
     def apply_all(self) -> int:
         """Aplica TODOS los cheats (frozen o no). Returns: número de successes."""
-        n = 0
-        for e in self.entries:
-            if self.apply(e):
-                n += 1
-        return n
+        return sum(1 for e in self.entries if self.apply(e))
 
     def apply_frozen(self) -> int:
         """Aplica solo los cheats con frozen=True."""
-        n = 0
-        for e in self.entries:
-            if e.frozen and self.apply(e):
-                n += 1
-        return n
+        return sum(1 for e in self.entries if e.frozen and self.apply(e))
 
     def read_current(self, entry: CheatEntry) -> Optional[str]:
         """Lee el valor actual de la memoria y lo devuelve formateado."""
-        if self.ps4 is None or not self.ps4.is_connected:
+        if not self._writable:
             return None
         try:
             h = entry.to_handler()
@@ -306,19 +307,7 @@ class CheatList:
             ce = ET.SubElement(cheat_entries, "CheatEntry")
             ce.set("ID", str(e.id))
             ET.SubElement(ce, "Description").text = e.description or f"cheat_{e.id}"
-            vt_str = VALUE_TYPE_TO_STR.get(e.value_type, "4 bytes")
-            # Cheat Engine usa: 0=byte, 1=2 bytes, 2=4 bytes, 3=8 bytes, 4=float, 5=double, 6=string, 7=array
-            ct_vt_map = {
-                ValueType.BYTE_TYPE: "0",
-                ValueType.USHORT_TYPE: "1",
-                ValueType.UINT_TYPE: "2",
-                ValueType.ULONG_TYPE: "3",
-                ValueType.FLOAT_TYPE: "4",
-                ValueType.DOUBLE_TYPE: "5",
-                ValueType.STRING_TYPE: "6",
-                ValueType.HEX_TYPE: "7",
-            }
-            ET.SubElement(ce, "VariableType").text = ct_vt_map.get(e.value_type, "2")
+            ET.SubElement(ce, "VariableType").text = CT_VARIABLE_TYPE_BY_VALUE_TYPE.get(e.value_type, "2")
             ET.SubElement(ce, "Address").text = f"{e.address:X}"
             ET.SubElement(ce, "Active").text = "1" if e.frozen else "0"
         tree = ET.ElementTree(root)
@@ -331,24 +320,14 @@ class CheatList:
         tree = ET.parse(path)
         root = tree.getroot()
         cl = cls(ps4=ps4)
-        ct_vt_reverse = {
-            "0": ValueType.BYTE_TYPE,
-            "1": ValueType.USHORT_TYPE,
-            "2": ValueType.UINT_TYPE,
-            "3": ValueType.ULONG_TYPE,
-            "4": ValueType.FLOAT_TYPE,
-            "5": ValueType.DOUBLE_TYPE,
-            "6": ValueType.STRING_TYPE,
-            "7": ValueType.HEX_TYPE,
-        }
-        next_id = 1
         for ce in root.iter("CheatEntry"):
             desc_el = ce.find("Description")
             vt_el = ce.find("VariableType")
             addr_el = ce.find("Address")
             active_el = ce.find("Active")
             desc = desc_el.text if desc_el is not None and desc_el.text else ""
-            vt = ct_vt_reverse.get(vt_el.text if vt_el is not None else "2", ValueType.UINT_TYPE)
+            vt = CT_VALUE_TYPE_BY_VARIABLE_TYPE.get(vt_el.text if vt_el is not None else "2",
+                                                    ValueType.UINT_TYPE)
             try:
                 addr = int(addr_el.text, 16) if addr_el is not None and addr_el.text else 0
             except ValueError:

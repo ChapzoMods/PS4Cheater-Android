@@ -3,8 +3,10 @@
 from .protocol import (
     CMD, CMD_STATUS, VMProtection,
     Process, ProcessInfo, MemoryEntry, ProcessMap,
-    build_header, build_packet, parse_status, cstr,
+    MemoryProtectionMixin, format_protection, format_region,
+    build_header, build_packet, parse_status, cstr, parse_records,
     parse_process_list, parse_process_info, parse_process_maps,
+    payload_pid, payload_pid_address_length,
     payload_proc_read, payload_proc_write, payload_proc_info,
     payload_proc_maps, payload_proc_install, payload_proc_alloc,
     payload_proc_free, payload_proc_protect, payload_proc_scan,
@@ -22,8 +24,10 @@ __all__ = [
     # protocol
     "CMD", "CMD_STATUS", "VMProtection",
     "Process", "ProcessInfo", "MemoryEntry", "ProcessMap",
-    "build_header", "build_packet", "parse_status", "cstr",
+    "MemoryProtectionMixin", "format_protection", "format_region",
+    "build_header", "build_packet", "parse_status", "cstr", "parse_records",
     "parse_process_list", "parse_process_info", "parse_process_maps",
+    "payload_pid", "payload_pid_address_length",
     "payload_proc_read", "payload_proc_write", "payload_proc_info",
     "payload_proc_maps", "payload_proc_install", "payload_proc_alloc",
     "payload_proc_free", "payload_proc_protect", "payload_proc_scan",

@@ -185,6 +185,28 @@ class PS4DBG:
         if expect_status:
             self._check_status(f"cmd=0x{int(cmd):08X}")
 
+    def _request(self, cmd: CMD, payload: bytes = b"", ctx: str = "", response_size: int = 0) -> bytes:
+        """
+        Ciclo completo de un comando: envía cabecera+payload, valida el status y
+        devuelve `response_size` bytes de respuesta (b"" si no se espera ninguna).
+        """
+        with self._lock:
+            self._send_cmd_packet(cmd, payload)
+            self._check_status(ctx or f"cmd=0x{int(cmd):08X}")
+            return self._recv_exact(response_size)
+
+    def _request_u64(self, cmd: CMD, payload: bytes, ctx: str) -> int:
+        """Comando cuya respuesta es un único uint64 (address)."""
+        return struct.unpack("<Q", self._request(cmd, payload, ctx, response_size=8))[0]
+
+    def _request_records(self, cmd: CMD, payload: bytes, ctx: str, entry_size: int) -> bytes:
+        """Comando cuya respuesta es `count` int32 seguido de count*entry_size bytes."""
+        with self._lock:
+            self._send_cmd_packet(cmd, payload)
+            self._check_status(ctx)
+            count = struct.unpack("<i", self._recv_exact(4))[0]
+            return self._recv_exact(count * entry_size)
+
     # ------------------------------------------------------------------
     # Operaciones de proceso
     # ------------------------------------------------------------------
@@ -202,34 +224,20 @@ class PS4DBG:
 
     def get_process_list(self) -> List[Process]:
         """CMD_PROC_LIST: lista procesos (pid + name)."""
-        with self._lock:
-            self._send_cmd_packet(CMD.CMD_PROC_LIST, b"")
-            self._check_status("CMD_PROC_LIST")
-            count_bytes = self._recv_exact(4)
-            count = struct.unpack("<i", count_bytes)[0]
-            data = self._recv_exact(count * P.PROC_LIST_ENTRY_SIZE)
-            return P.parse_process_list(data)
+        data = self._request_records(CMD.CMD_PROC_LIST, b"", "CMD_PROC_LIST", P.PROC_LIST_ENTRY_SIZE)
+        return P.parse_process_list(data)
 
     def get_process_info(self, pid: int) -> ProcessInfo:
         """CMD_PROC_INFO: info extendida de un proceso."""
-        with self._lock:
-            payload = P.payload_proc_info(pid)
-            self._send_cmd_packet(CMD.CMD_PROC_INFO, payload)
-            self._check_status(f"CMD_PROC_INFO pid={pid}")
-            data = self._recv_exact(P.PROC_PROC_INFO_SIZE)
-            return P.parse_process_info(data)
+        data = self._request(CMD.CMD_PROC_INFO, P.payload_proc_info(pid),
+                             f"CMD_PROC_INFO pid={pid}", response_size=P.PROC_PROC_INFO_SIZE)
+        return P.parse_process_info(data)
 
     def get_process_maps(self, pid: int) -> ProcessMap:
         """CMD_PROC_MAPS: mapa de memoria del proceso."""
-        with self._lock:
-            payload = P.payload_proc_maps(pid)
-            self._send_cmd_packet(CMD.CMD_PROC_MAPS, payload)
-            self._check_status(f"CMD_PROC_MAPS pid={pid}")
-            count_bytes = self._recv_exact(4)
-            count = struct.unpack("<i", count_bytes)[0]
-            data = self._recv_exact(count * P.PROC_MAP_ENTRY_SIZE)
-            entries = P.parse_process_maps(data)
-            return ProcessMap(pid=pid, entries=entries)
+        data = self._request_records(CMD.CMD_PROC_MAPS, P.payload_proc_maps(pid),
+                                     f"CMD_PROC_MAPS pid={pid}", P.PROC_MAP_ENTRY_SIZE)
+        return ProcessMap(pid=pid, entries=P.parse_process_maps(data))
 
     def read_memory(self, pid: int, address: int, length: int) -> bytes:
         """
@@ -273,35 +281,23 @@ class PS4DBG:
 
     def install_rpc(self, pid: int) -> int:
         """CMD_PROC_INTALL: instala RPC stub, devuelve la address del stub."""
-        with self._lock:
-            payload = P.payload_proc_install(pid)
-            self._send_cmd_packet(CMD.CMD_PROC_INTALL, payload)
-            self._check_status(f"CMD_PROC_INTALL pid={pid}")
-            data = self._recv_exact(P.PROC_INSTALL_SIZE)
-            return struct.unpack("<Q", data)[0]
+        return self._request_u64(CMD.CMD_PROC_INTALL, P.payload_proc_install(pid),
+                                 f"CMD_PROC_INTALL pid={pid}")
 
     def allocate_memory(self, pid: int, length: int) -> int:
         """CMD_PROC_ALLOC: aloja RWX memory, devuelve la address."""
-        with self._lock:
-            payload = P.payload_proc_alloc(pid, length)
-            self._send_cmd_packet(CMD.CMD_PROC_ALLOC, payload)
-            self._check_status(f"CMD_PROC_ALLOC pid={pid} len={length}")
-            data = self._recv_exact(P.PROC_ALLOC_SIZE)
-            return struct.unpack("<Q", data)[0]
+        return self._request_u64(CMD.CMD_PROC_ALLOC, P.payload_proc_alloc(pid, length),
+                                 f"CMD_PROC_ALLOC pid={pid} len={length}")
 
     def free_memory(self, pid: int, address: int, length: int) -> None:
         """CMD_PROC_FREE: libera memoria previamente alocada."""
-        with self._lock:
-            payload = P.payload_proc_free(pid, address, length)
-            self._send_cmd_packet(CMD.CMD_PROC_FREE, payload)
-            self._check_status(f"CMD_PROC_FREE pid={pid} addr=0x{address:X}")
+        self._request(CMD.CMD_PROC_FREE, P.payload_proc_free(pid, address, length),
+                      f"CMD_PROC_FREE pid={pid} addr=0x{address:X}")
 
     def change_protection(self, pid: int, address: int, length: int, prot: int) -> None:
         """CMD_PROC_PROTECT: cambia protección de páginas."""
-        with self._lock:
-            payload = P.payload_proc_protect(pid, address, length, prot)
-            self._send_cmd_packet(CMD.CMD_PROC_PROTECT, payload)
-            self._check_status(f"CMD_PROC_PROTECT pid={pid} addr=0x{address:X} prot=0x{prot:X}")
+        self._request(CMD.CMD_PROC_PROTECT, P.payload_proc_protect(pid, address, length, prot),
+                      f"CMD_PROC_PROTECT pid={pid} addr=0x{address:X} prot=0x{prot:X}")
 
     # ------------------------------------------------------------------
     # Operaciones de consola
@@ -319,10 +315,8 @@ class PS4DBG:
         notice_type: 0 = info, 1 = warning, 2 = error (depende del fw).
         message: texto ASCII/UTF-8.
         """
-        with self._lock:
-            payload = P.payload_console_notify(notice_type, message)
-            self._send_cmd_packet(CMD.CMD_CONSOLE_NOTIFY, payload)
-            self._check_status("CMD_CONSOLE_NOTIFY")
+        self._request(CMD.CMD_CONSOLE_NOTIFY, P.payload_console_notify(notice_type, message),
+                      "CMD_CONSOLE_NOTIFY")
 
     # ------------------------------------------------------------------
     # Discovery
